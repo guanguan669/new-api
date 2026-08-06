@@ -19,7 +19,7 @@ import (
 func TestSelectorFromRequestMapsStandardSizesAndMetadataOverrides(t *testing.T) {
 	selector, err := selectorFromRequest(relaycommon.TaskSubmitReq{Size: "1280x720"})
 	require.NoError(t, err)
-	require.Equal(t, h3Selector{AspectRatio: "16:9 (Landscape Widescreen)", Megapixels: defaultMegapixels, Multiple: defaultMultiple}, selector)
+	require.Equal(t, h3Selector{AspectRatio: "16:9 (Landscape Widescreen)", Megapixels: 0.9, Multiple: defaultMultiple}, selector)
 
 	selector, err = selectorFromRequest(relaycommon.TaskSubmitReq{
 		Size: "1024x1024",
@@ -31,11 +31,126 @@ func TestSelectorFromRequestMapsStandardSizesAndMetadataOverrides(t *testing.T) 
 	})
 	require.NoError(t, err)
 	require.Equal(t, "9:16 (Portrait Widescreen)", selector.AspectRatio)
-	require.Equal(t, "2", selector.Megapixels)
+	require.Equal(t, 2.0, selector.Megapixels)
 	require.Equal(t, "2", selector.Multiple)
 
 	_, err = selectorFromRequest(relaycommon.TaskSubmitReq{Size: "2048x512"})
 	require.ErrorContains(t, err, "unsupported runninghub size")
+}
+
+func TestSelectorFromRequestMapsResolutionAndClarityToH3Megapixels(t *testing.T) {
+	tests := []struct {
+		name    string
+		req     relaycommon.TaskSubmitReq
+		aspect  string
+		megapix float64
+	}{
+		{
+			name:    "table 720p landscape",
+			req:     relaycommon.TaskSubmitReq{Size: "1280x736"},
+			aspect:  "16:9 (Landscape Widescreen)",
+			megapix: 0.9,
+		},
+		{
+			name:    "standard 1080p landscape",
+			req:     relaycommon.TaskSubmitReq{Size: "1920x1080"},
+			aspect:  "16:9 (Landscape Widescreen)",
+			megapix: 2.0,
+		},
+		{
+			name:    "standard 720p portrait",
+			req:     relaycommon.TaskSubmitReq{Size: "720x1280"},
+			aspect:  "9:16 (Portrait Widescreen)",
+			megapix: 0.9,
+		},
+		{
+			name:    "custom resolution field",
+			req:     relaycommon.TaskSubmitReq{Metadata: map[string]any{"resolution": "1344x768"}},
+			aspect:  "16:9 (Landscape Widescreen)",
+			megapix: 0.98,
+		},
+		{
+			name:    "clarity field",
+			req:     relaycommon.TaskSubmitReq{Metadata: map[string]any{"clarity": "1.5"}},
+			aspect:  defaultAspect,
+			megapix: 1.5,
+		},
+		{
+			name:    "clarity resolution label",
+			req:     relaycommon.TaskSubmitReq{Metadata: map[string]any{"clarity": "1080P"}},
+			aspect:  "16:9 (Landscape Widescreen)",
+			megapix: 2.0,
+		},
+		{
+			name:    "explicit megapixels overrides resolution",
+			req:     relaycommon.TaskSubmitReq{Size: "1920x1080", Metadata: map[string]any{"megapixels": "0.5"}},
+			aspect:  "16:9 (Landscape Widescreen)",
+			megapix: 0.5,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			selector, err := selectorFromRequest(tt.req)
+			require.NoError(t, err)
+			require.Equal(t, tt.aspect, selector.AspectRatio)
+			require.Equal(t, tt.megapix, selector.Megapixels)
+		})
+	}
+
+	_, err := selectorFromRequest(relaycommon.TaskSubmitReq{Metadata: map[string]any{"clarity": "high"}})
+	require.ErrorContains(t, err, "unsupported runninghub megapixels")
+}
+
+func TestSelectorFromRequestMapsEveryH3LandscapePreset(t *testing.T) {
+	tests := []struct {
+		size      string
+		megapixel float64
+	}{
+		{size: "608x352", megapixel: 0.2},
+		{size: "736x416", megapixel: 0.3},
+		{size: "864x480", megapixel: 0.4},
+		{size: "960x544", megapixel: 0.5},
+		{size: "1056x608", megapixel: 0.6},
+		{size: "1152x640", megapixel: 0.7},
+		{size: "1216x672", megapixel: 0.8},
+		{size: "1280x736", megapixel: 0.9},
+		{size: "1344x768", megapixel: 0.98},
+		{size: "1376x768", megapixel: 1.0},
+		{size: "1504x832", megapixel: 1.2},
+		{size: "1664x928", megapixel: 1.5},
+		{size: "1824x1024", megapixel: 1.8},
+		{size: "1920x1080", megapixel: 2.0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.size, func(t *testing.T) {
+			selector, err := selectorFromRequest(relaycommon.TaskSubmitReq{Size: tt.size})
+			require.NoError(t, err)
+			require.Equal(t, "16:9 (Landscape Widescreen)", selector.AspectRatio)
+			require.Equal(t, tt.megapixel, selector.Megapixels)
+		})
+	}
+}
+
+func TestSelectorFromRequestUsesTopLevelResolution(t *testing.T) {
+	tests := []struct {
+		body       string
+		megapixels float64
+	}{
+		{body: `{"model":"minimax_h3","prompt":"video","resolution":"1824x1024"}`, megapixels: 1.8},
+		{body: `{"model":"minimax_h3","prompt":"video","resolution":"720P"}`, megapixels: 0.9},
+	}
+
+	for _, tt := range tests {
+		var req relaycommon.TaskSubmitReq
+		require.NoError(t, json.Unmarshal([]byte(tt.body), &req))
+
+		selector, err := selectorFromRequest(req)
+		require.NoError(t, err)
+		require.Equal(t, "16:9 (Landscape Widescreen)", selector.AspectRatio)
+		require.Equal(t, tt.megapixels, selector.Megapixels)
+	}
 }
 
 func TestConvertRequestBuildsH3NodesAndEnforcesLimits(t *testing.T) {
@@ -56,6 +171,7 @@ func TestConvertRequestBuildsH3NodesAndEnforcesLimits(t *testing.T) {
 	require.Contains(t, body.NodeInfoList, nodeInfo{NodeID: "138", FieldName: "value", FieldValue: "make a video"})
 	require.Contains(t, body.NodeInfoList, nodeInfo{NodeID: "132", FieldName: "value", FieldValue: 6})
 	require.Contains(t, body.NodeInfoList, nodeInfo{NodeID: "115", FieldName: "aspect_ratio", FieldValue: "9:16 (Portrait Widescreen)"})
+	require.Contains(t, body.NodeInfoList, nodeInfo{NodeID: "115", FieldName: "megapixels", FieldValue: 0.9})
 	require.Contains(t, body.NodeInfoList, nodeInfo{NodeID: "137", FieldName: "image", FieldValue: "uploaded-image-1.png"})
 	require.Contains(t, body.NodeInfoList, nodeInfo{NodeID: "618", FieldName: "image", FieldValue: "uploaded-image-2.png"})
 	require.Contains(t, body.NodeInfoList, nodeInfo{NodeID: "628", FieldName: "audio", FieldValue: "uploaded-audio.mp3"})

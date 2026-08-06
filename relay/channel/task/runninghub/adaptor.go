@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"math"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -36,6 +37,7 @@ const (
 	defaultMultiple   = 32
 	maxImages         = 9
 	maxAudios         = 3
+	maxAspectRatioGap = 0.06
 )
 
 var imageNodeIDs = []string{"137", "618", "617", "619", "627", "626", "625", "624", "623"}
@@ -83,6 +85,41 @@ type h3Selector struct {
 	AspectRatio string
 	Megapixels  any
 	Multiple    any
+}
+
+type h3MegapixelPreset struct {
+	Value        float64
+	OutputPixels int
+}
+
+type h3AspectPreset struct {
+	Ratio string
+	Value float64
+}
+
+// H3 exposes these megapixel choices with multiple=32. Use their documented
+// 16:9 output areas so standard downstream resolutions choose the same preset.
+var h3MegapixelPresets = []h3MegapixelPreset{
+	{Value: 0.2, OutputPixels: 608 * 352},
+	{Value: 0.3, OutputPixels: 736 * 416},
+	{Value: 0.4, OutputPixels: 864 * 480},
+	{Value: 0.5, OutputPixels: 960 * 544},
+	{Value: 0.6, OutputPixels: 1056 * 608},
+	{Value: 0.7, OutputPixels: 1152 * 640},
+	{Value: 0.8, OutputPixels: 1216 * 672},
+	{Value: 0.9, OutputPixels: 1280 * 736},
+	{Value: 0.98, OutputPixels: 1344 * 768},
+	{Value: 1.0, OutputPixels: 1376 * 768},
+	{Value: 1.2, OutputPixels: 1504 * 832},
+	{Value: 1.5, OutputPixels: 1664 * 928},
+	{Value: 1.8, OutputPixels: 1824 * 1024},
+	{Value: 2.0, OutputPixels: 1920 * 1080},
+}
+
+var h3AspectPresets = []h3AspectPreset{
+	{Ratio: "9:16 (Portrait Widescreen)", Value: 9.0 / 16.0},
+	{Ratio: "16:9 (Landscape Widescreen)", Value: 16.0 / 9.0},
+	{Ratio: "1:1 (Square)", Value: 1.0},
 }
 
 type referenceInput struct {
@@ -479,11 +516,36 @@ func runningHubResponseMessage(values ...string) string {
 func selectorFromRequest(req relaycommon.TaskSubmitReq) (h3Selector, error) {
 	selector := h3Selector{AspectRatio: defaultAspect, Megapixels: defaultMegapixels, Multiple: defaultMultiple}
 	if req.Size != "" {
-		aspect, err := aspectRatioFromSize(req.Size)
+		aspect, megapixels, err := h3ParametersFromSize(req.Size)
 		if err != nil {
 			return selector, err
 		}
 		selector.AspectRatio = aspect
+		selector.Megapixels = megapixels
+	}
+	if v := metadataString(req.Metadata, "resolution"); v != "" {
+		if megapixels, err := h3MegapixelsFromValue(v); err == nil {
+			selector.Megapixels = megapixels
+		} else {
+			aspect, megapixels, sizeErr := h3ParametersFromSize(v)
+			if sizeErr != nil {
+				return selector, err
+			}
+			selector.AspectRatio = aspect
+			selector.Megapixels = megapixels
+		}
+	}
+	if v := metadataString(req.Metadata, "clarity"); v != "" {
+		if megapixels, err := h3MegapixelsFromValue(v); err == nil {
+			selector.Megapixels = megapixels
+		} else {
+			aspect, megapixels, sizeErr := h3ParametersFromSize(v)
+			if sizeErr != nil {
+				return selector, err
+			}
+			selector.AspectRatio = aspect
+			selector.Megapixels = megapixels
+		}
 	}
 	if v := metadataString(req.Metadata, "aspect_ratio"); v != "" {
 		aspect, err := normalizeAspectRatio(v)
@@ -493,7 +555,11 @@ func selectorFromRequest(req relaycommon.TaskSubmitReq) (h3Selector, error) {
 		selector.AspectRatio = aspect
 	}
 	if v := metadataString(req.Metadata, "megapixels"); v != "" {
-		selector.Megapixels = v
+		megapixels, err := h3MegapixelsFromValue(v)
+		if err != nil {
+			return selector, err
+		}
+		selector.Megapixels = megapixels
 	}
 	if v := metadataString(req.Metadata, "multiple"); v != "" {
 		selector.Multiple = v
@@ -501,22 +567,98 @@ func selectorFromRequest(req relaycommon.TaskSubmitReq) (h3Selector, error) {
 	return selector, nil
 }
 
-func aspectRatioFromSize(size string) (string, error) {
+func h3ParametersFromSize(size string) (string, any, error) {
 	s := strings.ToLower(strings.TrimSpace(size))
 	s = strings.ReplaceAll(s, " ", "")
 	s = strings.ReplaceAll(s, "*", "x")
 	switch s {
 	case "", "auto":
-		return defaultAspect, nil
-	case "1024x1792", "720x1280", "576x1024", "512x912", "9:16", "portrait":
-		return "9:16 (Portrait Widescreen)", nil
-	case "1792x1024", "1280x720", "1024x576", "912x512", "16:9", "landscape":
-		return "16:9 (Landscape Widescreen)", nil
-	case "1024x1024", "1:1", "square":
-		return "1:1 (Square)", nil
-	default:
-		return "", fmt.Errorf("unsupported runninghub size %q; supported aspect ratios are 9:16, 16:9, and 1:1", size)
+		return defaultAspect, defaultMegapixels, nil
+	case "9:16", "portrait":
+		return "9:16 (Portrait Widescreen)", defaultMegapixels, nil
+	case "16:9", "landscape":
+		return "16:9 (Landscape Widescreen)", defaultMegapixels, nil
+	case "1:1", "square":
+		return "1:1 (Square)", defaultMegapixels, nil
 	}
+	if strings.HasSuffix(s, "p") {
+		height, err := strconv.Atoi(strings.TrimSuffix(s, "p"))
+		if err == nil && height >= 352 && height <= 1080 {
+			width := int(math.Round(float64(height) * 16.0 / 9.0))
+			return "16:9 (Landscape Widescreen)", nearestH3Megapixels(width, height), nil
+		}
+	}
+
+	width, height, ok := parseSizeDimensions(s)
+	if !ok {
+		return "", nil, fmt.Errorf("unsupported runninghub size %q; supported aspect ratios are 9:16, 16:9, and 1:1", size)
+	}
+	aspect, err := aspectRatioFromDimensions(width, height)
+	if err != nil {
+		return "", nil, fmt.Errorf("unsupported runninghub size %q; supported aspect ratios are 9:16, 16:9, and 1:1", size)
+	}
+	return aspect, nearestH3Megapixels(width, height), nil
+}
+
+func parseSizeDimensions(size string) (int, int, bool) {
+	parts := strings.Split(size, "x")
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	width, err := strconv.Atoi(parts[0])
+	if err != nil || width <= 0 {
+		return 0, 0, false
+	}
+	height, err := strconv.Atoi(parts[1])
+	if err != nil || height <= 0 {
+		return 0, 0, false
+	}
+	return width, height, true
+}
+
+func aspectRatioFromDimensions(width, height int) (string, error) {
+	actual := float64(width) / float64(height)
+	best := h3AspectPresets[0]
+	bestGap := math.Abs(actual-best.Value) / best.Value
+	for _, candidate := range h3AspectPresets[1:] {
+		gap := math.Abs(actual-candidate.Value) / candidate.Value
+		if gap < bestGap {
+			best = candidate
+			bestGap = gap
+		}
+	}
+	if bestGap > maxAspectRatioGap {
+		return "", fmt.Errorf("unsupported aspect ratio")
+	}
+	return best.Ratio, nil
+}
+
+func nearestH3Megapixels(width, height int) float64 {
+	targetPixels := float64(width) * float64(height)
+	best := h3MegapixelPresets[0]
+	bestGap := math.Abs(targetPixels - float64(best.OutputPixels))
+	for _, candidate := range h3MegapixelPresets[1:] {
+		gap := math.Abs(targetPixels - float64(candidate.OutputPixels))
+		if gap < bestGap {
+			best = candidate
+			bestGap = gap
+		}
+	}
+	return best.Value
+}
+
+func h3MegapixelsFromValue(value string) (float64, error) {
+	value = strings.TrimSpace(value)
+	megapixels, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, fmt.Errorf("unsupported runninghub megapixels %q", value)
+	}
+	for _, preset := range h3MegapixelPresets {
+		if math.Abs(megapixels-preset.Value) < 0.000001 {
+			return preset.Value, nil
+		}
+	}
+	return 0, fmt.Errorf("unsupported runninghub megapixels %q; supported values are 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.98, 1.0, 1.2, 1.5, 1.8, and 2.0", value)
 }
 
 func normalizeAspectRatio(value string) (string, error) {
