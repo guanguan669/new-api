@@ -113,7 +113,7 @@ var h3MegapixelPresets = []h3MegapixelPreset{
 	{Value: 1.2, OutputPixels: 1504 * 832},
 	{Value: 1.5, OutputPixels: 1664 * 928},
 	{Value: 1.8, OutputPixels: 1824 * 1024},
-	{Value: 2.0, OutputPixels: 1920 * 1080},
+	{Value: 2.0, OutputPixels: 1920 * 1088},
 }
 
 var h3AspectPresets = []h3AspectPreset{
@@ -454,6 +454,10 @@ func (a *TaskAdaptor) resolveReferenceValues(apiKey string, values []string) ([]
 }
 
 func (a *TaskAdaptor) uploadReference(apiKey string, input referenceInput) (string, error) {
+	if int64(len(input.Data)) > maxReferenceBytes() {
+		return "", fmt.Errorf("file %s exceeds max size %d MB", input.Name, maxReferenceMB())
+	}
+
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	part, err := writer.CreateFormFile("file", input.Name)
@@ -767,6 +771,9 @@ func readMultipartFile(fileHeader *multipart.FileHeader) (referenceInput, error)
 	if fileHeader == nil {
 		return referenceInput{}, fmt.Errorf("reference file is missing")
 	}
+	if fileHeader.Size > maxReferenceBytes() {
+		return referenceInput{}, fmt.Errorf("file %s exceeds max size %d MB", fileHeader.Filename, maxReferenceMB())
+	}
 	file, err := fileHeader.Open()
 	if err != nil {
 		return referenceInput{}, err
@@ -793,6 +800,9 @@ func downloadReference(rawURL string) (referenceInput, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return referenceInput{}, fmt.Errorf("download reference failed with status %s", resp.Status)
+	}
+	if resp.ContentLength > maxReferenceBytes() {
+		return referenceInput{}, fmt.Errorf("reference file exceeds max size %d MB", maxReferenceMB())
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxReferenceBytes()+1))
 	if err != nil {

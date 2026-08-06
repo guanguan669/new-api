@@ -7,11 +7,15 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -68,6 +72,12 @@ func TestSelectorFromRequestMapsResolutionAndClarityToH3Megapixels(t *testing.T)
 			req:     relaycommon.TaskSubmitReq{Metadata: map[string]any{"resolution": "1344x768"}},
 			aspect:  "16:9 (Landscape Widescreen)",
 			megapix: 0.98,
+		},
+		{
+			name:    "standard 720p resolution label",
+			req:     relaycommon.TaskSubmitReq{Metadata: map[string]any{"resolution": "720P"}},
+			aspect:  "16:9 (Landscape Widescreen)",
+			megapix: 0.9,
 		},
 		{
 			name:    "clarity field",
@@ -205,6 +215,21 @@ func TestEstimateBillingUsesRunningHubDuration(t *testing.T) {
 
 	ratios := (&TaskAdaptor{}).EstimateBilling(ctx, &relaycommon.RelayInfo{})
 	require.Equal(t, map[string]float64{"seconds": 12}, ratios)
+}
+
+func TestRunningHubSecondsNormalizationIsSharedByBillingAndNode132(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+	req := relaycommon.TaskSubmitReq{Seconds: "12"}
+	ctx.Set("task_request", req)
+
+	ratios := (&TaskAdaptor{}).EstimateBilling(ctx, &relaycommon.RelayInfo{})
+	require.Equal(t, 12.0, ratios["seconds"])
+
+	body, err := (&TaskAdaptor{baseURL: "https://runninghub.example", workflowID: "wf-1"}).convertRequest(ctx, req, "secret-key")
+	require.NoError(t, err)
+	require.Contains(t, body.NodeInfoList, nodeInfo{NodeID: "132", FieldName: "value", FieldValue: 12})
 }
 
 func TestEstimateBillingUsesRunningHubMegapixelRatio(t *testing.T) {
@@ -399,6 +424,55 @@ func TestBuildRequestBodyRejectsTooManyMultipartImagesBeforeUpload(t *testing.T)
 	adaptor := &TaskAdaptor{baseURL: server.URL, workflowID: "wf-1"}
 	_, err := adaptor.BuildRequestBody(ctx, &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ApiKey: "secret-key"}})
 	require.ErrorContains(t, err, "at most 9 reference images")
+	require.Zero(t, uploadCalls)
+}
+
+func TestDownloadReferenceRejectsOversizedContentLengthBeforeBodyRead(t *testing.T) {
+	oldMax := constant.MaxFileDownloadMB
+	constant.MaxFileDownloadMB = 1
+	fetchSetting := system_setting.GetFetchSetting()
+	oldFetchSetting := *fetchSetting
+	fetchSetting.EnableSSRFProtection = false
+	service.InitHttpClient()
+	t.Cleanup(func() {
+		constant.MaxFileDownloadMB = oldMax
+		*fetchSetting = oldFetchSetting
+		service.InitHttpClient()
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", strconv.FormatInt(maxReferenceBytes()+1, 10))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	_, err := downloadReference(server.URL + "/too-large.png")
+	require.ErrorContains(t, err, "exceeds max size 1 MB")
+}
+
+func TestReferenceInputsRejectOversizedMultipartHeaderBeforeRead(t *testing.T) {
+	oldMax := constant.MaxFileDownloadMB
+	constant.MaxFileDownloadMB = 1
+	t.Cleanup(func() { constant.MaxFileDownloadMB = oldMax })
+
+	_, err := readMultipartFile(&multipart.FileHeader{Filename: "too-large.png", Size: maxReferenceBytes() + 1})
+	require.ErrorContains(t, err, "exceeds max size 1 MB")
+}
+
+func TestUploadReferenceRejectsOversizedInputBeforeHTTP(t *testing.T) {
+	oldMax := constant.MaxFileDownloadMB
+	constant.MaxFileDownloadMB = 1
+	t.Cleanup(func() { constant.MaxFileDownloadMB = oldMax })
+
+	uploadCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		uploadCalls++
+		http.Error(w, "upload should not be called", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	_, err := (&TaskAdaptor{baseURL: server.URL}).uploadReference("secret-key", referenceInput{Name: "too-large.mp3", Data: make([]byte, maxReferenceBytes()+1)})
+	require.ErrorContains(t, err, "exceeds max size 1 MB")
 	require.Zero(t, uploadCalls)
 }
 
