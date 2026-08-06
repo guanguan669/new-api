@@ -61,17 +61,19 @@ type createRequest struct {
 }
 
 type createResponse struct {
-	Code int    `json:"code"`
-	Msg  string `json:"msg"`
-	Data struct {
+	Code    int    `json:"code"`
+	Msg     string `json:"msg"`
+	Message string `json:"message"`
+	Data    struct {
 		TaskID string `json:"taskId"`
 	} `json:"data"`
 }
 
 type uploadResponse struct {
-	Code int    `json:"code"`
-	Msg  string `json:"msg"`
-	Data struct {
+	Code    int    `json:"code"`
+	Msg     string `json:"msg"`
+	Message string `json:"message"`
+	Data    struct {
 		FileName string `json:"fileName"`
 		Filename string `json:"filename"`
 	} `json:"data"`
@@ -170,8 +172,8 @@ func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *rela
 	if err := common.Unmarshal(body, &result); err != nil {
 		return "", nil, service.TaskErrorWrapper(errors.Wrapf(err, "body: %s", body), "unmarshal_response_body_failed", http.StatusInternalServerError)
 	}
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices || result.Code != 0 {
-		message := strings.TrimSpace(result.Msg)
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices || !isRunningHubSuccessCode(result.Code) {
+		message := runningHubResponseMessage(result.Msg, result.Message)
 		if message == "" {
 			message = resp.Status
 		}
@@ -243,7 +245,7 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 	}
 
 	taskInfo := &relaycommon.TaskInfo{Code: code}
-	if code != 0 {
+	if !isRunningHubSuccessCode(code) {
 		taskInfo.Status = string(model.TaskStatusFailure)
 		taskInfo.Reason = message
 		taskInfo.Progress = "100%"
@@ -445,7 +447,7 @@ func (a *TaskAdaptor) uploadReference(apiKey string, input referenceInput) (stri
 		return "", errors.Wrap(err, "unmarshal runninghub upload response failed")
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices || !isRunningHubSuccessCode(result.Code) {
-		message := strings.TrimSpace(result.Msg)
+		message := runningHubResponseMessage(result.Msg, result.Message)
 		if message == "" {
 			message = resp.Status
 		}
@@ -463,6 +465,15 @@ func (a *TaskAdaptor) uploadReference(apiKey string, input referenceInput) (stri
 
 func isRunningHubSuccessCode(code int) bool {
 	return code == 0 || code == http.StatusOK
+}
+
+func runningHubResponseMessage(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func selectorFromRequest(req relaycommon.TaskSubmitReq) (h3Selector, error) {

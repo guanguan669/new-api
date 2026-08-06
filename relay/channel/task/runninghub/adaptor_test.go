@@ -157,6 +157,30 @@ func TestDoResponseAndParseTaskResult(t *testing.T) {
 	require.Equal(t, "bad input", info.Reason)
 }
 
+func TestDoResponseAndParseTaskResultAcceptV2SuccessCode(t *testing.T) {
+	adaptor := &TaskAdaptor{}
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Body:       io.NopCloser(strings.NewReader(`{"code":200,"message":"ok","data":{"taskId":"task-200"}}`)),
+	}
+	taskID, _, taskErr := adaptor.DoResponse(ctx, resp, &relaycommon.RelayInfo{
+		OriginModelName: "minimax_h3",
+		TaskRelayInfo:   &relaycommon.TaskRelayInfo{PublicTaskID: "task_public_200"},
+	})
+	require.Nil(t, taskErr)
+	require.Equal(t, "task-200", taskID)
+
+	info, err := adaptor.ParseTaskResult([]byte(`{"code":200,"data":{"status":"SUCCESS","results":[{"url":"https://cdn.example/download/video","outputType":"mp4"}]}}`))
+	require.NoError(t, err)
+	require.Equal(t, string(model.TaskStatusSuccess), info.Status)
+	require.Equal(t, "https://cdn.example/download/video", info.Url)
+}
+
 func TestMultipartUploadBuildRequestBody(t *testing.T) {
 	var uploadedBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
