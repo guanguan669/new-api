@@ -42,6 +42,17 @@ const (
 	maxAspectRatioGap          = 0.06
 )
 
+var h3SupportedAspectLabels = []string{
+	"1:1 (Square)",
+	"2:3 (Portrait Photo)",
+	"3:2 (Photo)",
+	"3:4 (Portrait Standard)",
+	"4:3 (Standard)",
+	"9:16 (Portrait Widescreen)",
+	"16:9 (Widescreen)",
+	"21:9 (Ultrawide)",
+}
+
 var imageNodeIDs = []string{"137", "618", "617", "619", "627", "626", "625", "624", "623"}
 var audioNodeIDs = []string{"628", "630", "629"}
 
@@ -121,9 +132,14 @@ var h3MegapixelPresets = []h3MegapixelPreset{
 }
 
 var h3AspectPresets = []h3AspectPreset{
+	{Ratio: "1:1 (Square)", Value: 1.0},
+	{Ratio: "2:3 (Portrait Photo)", Value: 2.0 / 3.0},
+	{Ratio: "3:2 (Photo)", Value: 3.0 / 2.0},
+	{Ratio: "3:4 (Portrait Standard)", Value: 3.0 / 4.0},
+	{Ratio: "4:3 (Standard)", Value: 4.0 / 3.0},
 	{Ratio: "9:16 (Portrait Widescreen)", Value: 9.0 / 16.0},
 	{Ratio: "16:9 (Widescreen)", Value: 16.0 / 9.0},
-	{Ratio: "1:1 (Square)", Value: 1.0},
+	{Ratio: "21:9 (Ultrawide)", Value: 21.0 / 9.0},
 }
 
 type referenceInput struct {
@@ -729,12 +745,22 @@ func h3ParametersFromSize(size string) (string, any, error) {
 	switch s {
 	case "", "auto":
 		return defaultAspect, defaultMegapixels, nil
-	case "9:16", "portrait":
-		return "9:16 (Portrait Widescreen)", defaultMegapixels, nil
-	case "16:9", "landscape":
-		return "16:9 (Widescreen)", defaultMegapixels, nil
-	case "1:1", "square":
+	case "1:1", "1:1(square)", "square":
 		return "1:1 (Square)", defaultMegapixels, nil
+	case "2:3", "2:3(portraitphoto)", "portraitphoto":
+		return "2:3 (Portrait Photo)", defaultMegapixels, nil
+	case "3:2", "3:2(photo)", "photo":
+		return "3:2 (Photo)", defaultMegapixels, nil
+	case "3:4", "3:4(portraitstandard)", "portraitstandard":
+		return "3:4 (Portrait Standard)", defaultMegapixels, nil
+	case "4:3", "4:3(standard)", "standard":
+		return "4:3 (Standard)", defaultMegapixels, nil
+	case "9:16", "9:16(portraitwidescreen)", "portrait", "portraitwidescreen":
+		return "9:16 (Portrait Widescreen)", defaultMegapixels, nil
+	case "16:9", "16:9(widescreen)", "16:9(landscapewidescreen)", "landscape", "widescreen":
+		return "16:9 (Widescreen)", defaultMegapixels, nil
+	case "21:9", "21:9(ultrawide)", "ultrawide":
+		return "21:9 (Ultrawide)", defaultMegapixels, nil
 	}
 	if strings.HasSuffix(s, "p") {
 		height, err := strconv.Atoi(strings.TrimSuffix(s, "p"))
@@ -746,11 +772,11 @@ func h3ParametersFromSize(size string) (string, any, error) {
 
 	width, height, ok := parseSizeDimensions(s)
 	if !ok {
-		return "", nil, fmt.Errorf("unsupported runninghub size %q; supported aspect ratios are 9:16, 16:9, and 1:1", size)
+		return "", nil, fmt.Errorf("unsupported runninghub size %q; supported aspect ratios are %s", size, strings.Join(h3SupportedAspectLabels, ", "))
 	}
 	aspect, err := aspectRatioFromDimensions(width, height)
 	if err != nil {
-		return "", nil, fmt.Errorf("unsupported runninghub size %q; supported aspect ratios are 9:16, 16:9, and 1:1", size)
+		return "", nil, fmt.Errorf("unsupported runninghub size %q; supported aspect ratios are %s", size, strings.Join(h3SupportedAspectLabels, ", "))
 	}
 	return aspect, nearestH3Megapixels(width, height), nil
 }
@@ -859,14 +885,24 @@ func h3MegapixelFloat(value any) (float64, bool) {
 func normalizeAspectRatio(value string) (string, error) {
 	s := strings.ToLower(strings.TrimSpace(value))
 	switch s {
-	case "9:16", "9:16 (portrait widescreen)", "portrait":
-		return "9:16 (Portrait Widescreen)", nil
-	case "16:9", "16:9 (widescreen)", "16:9 (landscape widescreen)", "landscape":
-		return "16:9 (Widescreen)", nil
 	case "1:1", "1:1 (square)", "square":
 		return "1:1 (Square)", nil
+	case "2:3", "2:3 (portrait photo)", "portrait photo":
+		return "2:3 (Portrait Photo)", nil
+	case "3:2", "3:2 (photo)", "photo":
+		return "3:2 (Photo)", nil
+	case "3:4", "3:4 (portrait standard)", "portrait standard":
+		return "3:4 (Portrait Standard)", nil
+	case "4:3", "4:3 (standard)", "standard":
+		return "4:3 (Standard)", nil
+	case "9:16", "9:16 (portrait widescreen)", "portrait", "portrait widescreen":
+		return "9:16 (Portrait Widescreen)", nil
+	case "16:9", "16:9 (widescreen)", "16:9 (landscape widescreen)", "landscape", "widescreen":
+		return "16:9 (Widescreen)", nil
+	case "21:9", "21:9 (ultrawide)", "ultrawide":
+		return "21:9 (Ultrawide)", nil
 	default:
-		return "", fmt.Errorf("unsupported runninghub aspect_ratio %q; supported values are 9:16, 16:9, and 1:1", value)
+		return "", fmt.Errorf("unsupported runninghub aspect_ratio %q; supported values are %s", value, strings.Join(h3SupportedAspectLabels, ", "))
 	}
 }
 

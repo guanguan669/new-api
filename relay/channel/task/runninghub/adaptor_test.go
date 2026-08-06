@@ -43,6 +43,44 @@ func TestSelectorFromRequestMapsStandardSizesAndMetadataOverrides(t *testing.T) 
 	require.ErrorContains(t, err, "unsupported runninghub size")
 }
 
+func TestSelectorFromRequestMapsEveryH3AspectRatio(t *testing.T) {
+	tests := []struct {
+		name   string
+		size   string
+		aspect string
+	}{
+		{name: "square", size: "384x384", aspect: "1:1 (Square)"},
+		{name: "portrait photo", size: "384x576", aspect: "2:3 (Portrait Photo)"},
+		{name: "photo", size: "576x384", aspect: "3:2 (Photo)"},
+		{name: "portrait standard", size: "384x512", aspect: "3:4 (Portrait Standard)"},
+		{name: "standard", size: "512x384", aspect: "4:3 (Standard)"},
+		{name: "portrait widescreen", size: "360x640", aspect: "9:16 (Portrait Widescreen)"},
+		{name: "widescreen", size: "640x360", aspect: "16:9 (Widescreen)"},
+		{name: "ultrawide", size: "672x288", aspect: "21:9 (Ultrawide)"},
+	}
+
+	for _, tt := range tests {
+		t.Run("size "+tt.name, func(t *testing.T) {
+			selector, err := selectorFromRequest(relaycommon.TaskSubmitReq{Size: tt.size})
+			require.NoError(t, err)
+			require.Equal(t, tt.aspect, selector.AspectRatio)
+			require.Equal(t, 0.2, selector.Megapixels)
+		})
+
+		t.Run("metadata "+tt.name, func(t *testing.T) {
+			selector, err := selectorFromRequest(relaycommon.TaskSubmitReq{
+				Metadata: map[string]any{"aspect_ratio": tt.aspect},
+			})
+			require.NoError(t, err)
+			require.Equal(t, tt.aspect, selector.AspectRatio)
+		})
+	}
+
+	selector, err := selectorFromRequest(relaycommon.TaskSubmitReq{Size: "21:9 (Ultrawide)"})
+	require.NoError(t, err)
+	require.Equal(t, "21:9 (Ultrawide)", selector.AspectRatio)
+}
+
 func TestSelectorFromRequestMapsResolutionAndClarityToH3Megapixels(t *testing.T) {
 	tests := []struct {
 		name    string
