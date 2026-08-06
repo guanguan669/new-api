@@ -388,7 +388,15 @@ func (a *TaskAdaptor) convertRequest(c *gin.Context, req relaycommon.TaskSubmitR
 		if err != nil {
 			return nil, err
 		}
-		return &createRequest{APIKey: apiKey, Workflow: string(serializedWorkflow)}, nil
+		// RunningHub validates workflowId before honoring workflow. Keep the
+		// normal selector fields for that API contract; workflow remains the
+		// execution source and contains SaveVideo 92 as the only final output.
+		return &createRequest{
+			APIKey:       apiKey,
+			WorkflowID:   workflowID,
+			NodeInfoList: nodes,
+			Workflow:     string(serializedWorkflow),
+		}, nil
 	}
 	return &createRequest{APIKey: apiKey, WorkflowID: workflowID, NodeInfoList: nodes}, nil
 }

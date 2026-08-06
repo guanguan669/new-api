@@ -522,8 +522,8 @@ func TestMultipartUploadBuildRequestBody(t *testing.T) {
 
 	var body createRequest
 	require.NoError(t, json.Unmarshal(payload, &body))
-	require.Empty(t, body.WorkflowID)
-	require.Empty(t, body.NodeInfoList)
+	require.Equal(t, "wf-image", body.WorkflowID)
+	require.Contains(t, body.NodeInfoList, nodeInfo{NodeID: "137", FieldName: "image", FieldValue: "rh-uploaded.png"})
 	var submittedWorkflow map[string]any
 	require.NoError(t, json.Unmarshal([]byte(body.Workflow), &submittedWorkflow))
 	require.Contains(t, submittedWorkflow, "92")
