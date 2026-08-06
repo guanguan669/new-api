@@ -140,7 +140,7 @@ func TestValidateRunningHubAPIFormatRequiresH3Inputs(t *testing.T) {
 	require.ErrorContains(t, validateRunningHubAPIFormatResponse(broken), "node 138")
 }
 
-func TestValidateRunningHubAPIFormatRejectsCompetingImageOutput(t *testing.T) {
+func TestPrepareRunningHubAPIFormatRemovesCompetingImageOutput(t *testing.T) {
 	body := runningHubH3APIFormatResponse(t)
 	var response map[string]any
 	require.NoError(t, json.Unmarshal(body, &response))
@@ -151,7 +151,10 @@ func TestValidateRunningHubAPIFormatRejectsCompetingImageOutput(t *testing.T) {
 	}
 	broken, err := json.Marshal(response)
 	require.NoError(t, err)
-	require.ErrorContains(t, validateRunningHubAPIFormatResponse(broken), "competing non-video output node 603")
+	preparedPrompt, err := common.PrepareRunningHubH3WorkflowForMode(broken, common.RunningHubH3WorkflowImageToVideo)
+	require.NoError(t, err)
+	require.Contains(t, preparedPrompt, "92")
+	require.NotContains(t, preparedPrompt, "603")
 }
 
 func TestValidateRunningHubTextAPIFormatDoesNotRequireImageNodes(t *testing.T) {

@@ -420,7 +420,7 @@ func TestDoResponseAndParseTaskResult(t *testing.T) {
 	require.Equal(t, "bad input", info.Reason)
 }
 
-func TestValidateWorkflowOutputRejectsCompetingImageOutput(t *testing.T) {
+func TestPrepareWorkflowKeepsSaveVideoAndRemovesCompetingImageOutput(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPost, r.Method)
 		require.Equal(t, apiFormatPath, r.URL.Path)
@@ -433,8 +433,10 @@ func TestValidateWorkflowOutputRejectsCompetingImageOutput(t *testing.T) {
 	defer server.Close()
 
 	adaptor := &TaskAdaptor{baseURL: server.URL}
-	err := adaptor.validateWorkflowOutput("rh-test-key", "wf-h3", common.RunningHubH3WorkflowImageToVideo)
-	require.ErrorContains(t, err, "competing non-video output node 603")
+	workflow, err := adaptor.prepareWorkflow("rh-test-key", "wf-h3", common.RunningHubH3WorkflowImageToVideo)
+	require.NoError(t, err)
+	require.Contains(t, workflow, "92")
+	require.NotContains(t, workflow, "603")
 }
 
 func TestDoResponseAndParseTaskResultAcceptV2SuccessCode(t *testing.T) {
@@ -492,6 +494,24 @@ func TestMultipartUploadBuildRequestBody(t *testing.T) {
 	ctx.Request.Header.Set("Content-Type", writer.FormDataContentType())
 	require.NoError(t, ctx.Request.ParseMultipartForm(1<<20))
 	ctx.Set("task_request", relaycommon.TaskSubmitReq{Prompt: "hello"})
+	workflow := map[string]any{
+		"138": map[string]any{"inputs": map[string]any{"value": ""}},
+		"132": map[string]any{"inputs": map[string]any{"value": 5}},
+		"115": map[string]any{"inputs": map[string]any{"aspect_ratio": defaultAspect, "megapixels": defaultMegapixels, "multiple": defaultMultiple}},
+		"92":  map[string]any{"class_type": "SaveVideo", "inputs": map[string]any{"video": []any{"130", 0}}},
+	}
+	for _, nodeID := range imageNodeIDs {
+		workflow[nodeID] = map[string]any{"inputs": map[string]any{"image": ""}}
+	}
+	for _, nodeID := range audioNodeIDs {
+		workflow[nodeID] = map[string]any{"inputs": map[string]any{"audio": ""}}
+	}
+	workflow["603"] = map[string]any{"class_type": "solarL_SaveImagesToZip", "inputs": map[string]any{"zip": []any{"522", 0}}}
+	workflowBody, err := json.Marshal(map[string]any{"code": 0, "data": map[string]any{"prompt": workflow}})
+	require.NoError(t, err)
+	preparedWorkflow, err := common.PrepareRunningHubH3WorkflowForMode(workflowBody, common.RunningHubH3WorkflowImageToVideo)
+	require.NoError(t, err)
+	ctx.Set(preparedWorkflowContextKey, preparedWorkflow)
 
 	adaptor := &TaskAdaptor{baseURL: server.URL, imageWorkflowID: "wf-image", textWorkflowID: "wf-text"}
 	reader, err := adaptor.BuildRequestBody(ctx, &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ApiKey: "secret-key"}})
@@ -502,7 +522,14 @@ func TestMultipartUploadBuildRequestBody(t *testing.T) {
 
 	var body createRequest
 	require.NoError(t, json.Unmarshal(payload, &body))
-	require.Contains(t, body.NodeInfoList, nodeInfo{NodeID: "137", FieldName: "image", FieldValue: "rh-uploaded.png"})
+	require.Empty(t, body.WorkflowID)
+	require.Empty(t, body.NodeInfoList)
+	var submittedWorkflow map[string]any
+	require.NoError(t, json.Unmarshal([]byte(body.Workflow), &submittedWorkflow))
+	require.Contains(t, submittedWorkflow, "92")
+	require.NotContains(t, submittedWorkflow, "603")
+	imageNode := submittedWorkflow["137"].(map[string]any)
+	require.Equal(t, "rh-uploaded.png", imageNode["inputs"].(map[string]any)["image"])
 }
 
 func TestBuildRequestBodyRejectsTooManyMultipartImagesBeforeUpload(t *testing.T) {

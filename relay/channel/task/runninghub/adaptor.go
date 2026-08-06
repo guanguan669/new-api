@@ -27,18 +27,19 @@ import (
 )
 
 const (
-	channelName       = "runninghub"
-	modelName         = "minimax_h3"
-	createPath        = "/task/openapi/create"
-	queryPath         = "/openapi/v2/query"
-	uploadPath        = "/openapi/v2/media/upload/binary"
-	apiFormatPath     = "/api/openapi/getJsonApiFormat"
-	defaultAspect     = "9:16 (Portrait Widescreen)"
-	defaultMegapixels = 1
-	defaultMultiple   = 32
-	maxImages         = 9
-	maxAudios         = 3
-	maxAspectRatioGap = 0.06
+	channelName                = "runninghub"
+	modelName                  = "minimax_h3"
+	createPath                 = "/task/openapi/create"
+	queryPath                  = "/openapi/v2/query"
+	uploadPath                 = "/openapi/v2/media/upload/binary"
+	apiFormatPath              = "/api/openapi/getJsonApiFormat"
+	preparedWorkflowContextKey = "runninghub_h3_prepared_workflow"
+	defaultAspect              = "9:16 (Portrait Widescreen)"
+	defaultMegapixels          = 1
+	defaultMultiple            = 32
+	maxImages                  = 9
+	maxAudios                  = 3
+	maxAspectRatioGap          = 0.06
 )
 
 var imageNodeIDs = []string{"137", "618", "617", "619", "627", "626", "625", "624", "623"}
@@ -60,8 +61,9 @@ type nodeInfo struct {
 
 type createRequest struct {
 	APIKey       string     `json:"apiKey"`
-	WorkflowID   string     `json:"workflowId"`
-	NodeInfoList []nodeInfo `json:"nodeInfoList"`
+	WorkflowID   string     `json:"workflowId,omitempty"`
+	NodeInfoList []nodeInfo `json:"nodeInfoList,omitempty"`
+	Workflow     string     `json:"workflow,omitempty"`
 }
 
 type createResponse struct {
@@ -154,9 +156,11 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 	if err := a.validateRequestInput(c, req); err != nil {
 		return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
 	}
-	if err := a.validateWorkflowOutput(info.ApiKey, workflowID, workflowMode); err != nil {
+	workflow, err := a.prepareWorkflow(info.ApiKey, workflowID, workflowMode)
+	if err != nil {
 		return service.TaskErrorWrapperLocal(err, "invalid_workflow", http.StatusBadGateway)
 	}
+	c.Set(preparedWorkflowContextKey, workflow)
 	return nil
 }
 
@@ -374,7 +378,47 @@ func (a *TaskAdaptor) convertRequest(c *gin.Context, req relaycommon.TaskSubmitR
 	for i, audio := range audios {
 		nodes = append(nodes, nodeInfo{NodeID: audioNodeIDs[i], FieldName: "audio", FieldValue: audio})
 	}
+	if workflow := preparedWorkflowFromContext(c); workflow != nil {
+		for _, node := range nodes {
+			if err := setRunningHubWorkflowNodeValue(workflow, node); err != nil {
+				return nil, err
+			}
+		}
+		serializedWorkflow, err := common.Marshal(workflow)
+		if err != nil {
+			return nil, err
+		}
+		return &createRequest{APIKey: apiKey, Workflow: string(serializedWorkflow)}, nil
+	}
 	return &createRequest{APIKey: apiKey, WorkflowID: workflowID, NodeInfoList: nodes}, nil
+}
+
+func preparedWorkflowFromContext(c *gin.Context) map[string]any {
+	if c == nil {
+		return nil
+	}
+	value, exists := c.Get(preparedWorkflowContextKey)
+	if !exists {
+		return nil
+	}
+	workflow, _ := value.(map[string]any)
+	return workflow
+}
+
+func setRunningHubWorkflowNodeValue(workflow map[string]any, node nodeInfo) error {
+	workflowNode, ok := workflow[node.NodeID].(map[string]any)
+	if !ok {
+		return fmt.Errorf("RunningHub H3 prompt missing node %s", node.NodeID)
+	}
+	inputs, ok := workflowNode["inputs"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("RunningHub H3 prompt missing node %s inputs", node.NodeID)
+	}
+	if _, exists := inputs[node.FieldName]; !exists {
+		return fmt.Errorf("RunningHub H3 prompt missing node %s input %s", node.NodeID, node.FieldName)
+	}
+	inputs[node.FieldName] = node.FieldValue
+	return nil
 }
 
 func (a *TaskAdaptor) workflowForRequest(c *gin.Context, req relaycommon.TaskSubmitReq) (string, common.RunningHubH3WorkflowMode, error) {
@@ -563,39 +607,44 @@ func (a *TaskAdaptor) uploadReference(apiKey string, input referenceInput) (stri
 	return fileName, nil
 }
 
-func (a *TaskAdaptor) validateWorkflowOutput(apiKey string, workflowID string, workflowMode common.RunningHubH3WorkflowMode) error {
+func (a *TaskAdaptor) prepareWorkflow(apiKey string, workflowID string, workflowMode common.RunningHubH3WorkflowMode) (map[string]any, error) {
 	payload, err := common.Marshal(map[string]string{
 		"apiKey":     apiKey,
 		"workflowId": workflowID,
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	request, err := http.NewRequest(http.MethodPost, a.baseURL+apiFormatPath, bytes.NewReader(payload))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	request.Header.Set("Authorization", "Bearer "+apiKey)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json")
 	client, err := service.GetHttpClientWithProxy(strings.TrimSpace(a.proxy))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	resp, err := client.Do(request)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("RunningHub workflow check failed with status %s", resp.Status)
+		return nil, fmt.Errorf("RunningHub workflow check failed with status %s", resp.Status)
 	}
-	return common.ValidateRunningHubH3APIFormatForMode(body, workflowMode)
+	return common.PrepareRunningHubH3WorkflowForMode(body, workflowMode)
+}
+
+func (a *TaskAdaptor) validateWorkflowOutput(apiKey string, workflowID string, workflowMode common.RunningHubH3WorkflowMode) error {
+	_, err := a.prepareWorkflow(apiKey, workflowID, workflowMode)
+	return err
 }
 
 func isRunningHubSuccessCode(code int) bool {

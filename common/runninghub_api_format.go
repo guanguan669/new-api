@@ -20,31 +20,44 @@ func ValidateRunningHubH3APIFormat(body []byte) error {
 }
 
 func ValidateRunningHubH3APIFormatForMode(body []byte, mode RunningHubH3WorkflowMode) error {
+	_, err := PrepareRunningHubH3WorkflowForMode(body, mode)
+	return err
+}
+
+// PrepareRunningHubH3WorkflowForMode extracts RunningHub's Comfy API prompt,
+// verifies the H3 input contract, and leaves SaveVideo node 92 as the only
+// final output. Some workflow revisions retain detached preview/export nodes;
+// RunningHub may otherwise return those files instead of the video.
+func PrepareRunningHubH3WorkflowForMode(body []byte, mode RunningHubH3WorkflowMode) (map[string]any, error) {
 	var envelope map[string]any
 	if err := Unmarshal(body, &envelope); err != nil {
-		return fmt.Errorf("invalid RunningHub API format response: %w", err)
+		return nil, fmt.Errorf("invalid RunningHub API format response: %w", err)
 	}
 
 	if success, ok := envelope["success"].(bool); ok && !success {
-		return fmt.Errorf("RunningHub API format check failed: %s", runningHubEnvelopeMessage(envelope))
+		return nil, fmt.Errorf("RunningHub API format check failed: %s", runningHubEnvelopeMessage(envelope))
 	}
 	if code, ok := runningHubNumber(envelope["code"]); ok && code != 0 && code != 200 {
-		return fmt.Errorf("RunningHub API format check failed: code %d: %s", int(code), runningHubEnvelopeMessage(envelope))
+		return nil, fmt.Errorf("RunningHub API format check failed: code %d: %s", int(code), runningHubEnvelopeMessage(envelope))
 	}
 
 	data, ok := envelope["data"].(map[string]any)
 	if !ok {
-		return fmt.Errorf("RunningHub API format response missing data")
+		return nil, fmt.Errorf("RunningHub API format response missing data")
 	}
 	promptValue, ok := data["prompt"]
 	if !ok {
-		return fmt.Errorf("RunningHub API format response missing data.prompt")
+		return nil, fmt.Errorf("RunningHub API format response missing data.prompt")
 	}
 	prompt, err := runningHubPromptObject(promptValue)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return validateRunningHubH3Prompt(prompt, mode)
+	if err := validateRunningHubH3Prompt(prompt, mode); err != nil {
+		return nil, err
+	}
+	removeRunningHubNonVideoOutputs(prompt)
+	return prompt, nil
 }
 
 func runningHubPromptObject(promptValue any) (map[string]any, error) {
@@ -110,17 +123,23 @@ func validateRunningHubH3Prompt(prompt map[string]any, mode RunningHubH3Workflow
 		return fmt.Errorf("RunningHub H3 prompt missing video output node 92 input video")
 	}
 
+	return nil
+}
+
+func removeRunningHubNonVideoOutputs(prompt map[string]any) {
 	for nodeID, value := range prompt {
+		if nodeID == "92" {
+			continue
+		}
 		node, ok := value.(map[string]any)
-		if !ok || nodeID == "92" {
+		if !ok {
 			continue
 		}
 		classType := strings.ToLower(strings.TrimSpace(fmt.Sprint(node["class_type"])))
-		if strings.Contains(classType, "saveimage") || strings.Contains(classType, "previewimage") {
-			return fmt.Errorf("RunningHub H3 prompt has competing non-video output node %s (%s); remove it so SaveVideo is the only final output", nodeID, node["class_type"])
+		if strings.Contains(classType, "save") || strings.Contains(classType, "preview") {
+			delete(prompt, nodeID)
 		}
 	}
-	return nil
 }
 
 func runningHubNodeInputs(prompt map[string]any, nodeID string) (map[string]any, bool) {
