@@ -122,7 +122,7 @@ var h3MegapixelPresets = []h3MegapixelPreset{
 
 var h3AspectPresets = []h3AspectPreset{
 	{Ratio: "9:16 (Portrait Widescreen)", Value: 9.0 / 16.0},
-	{Ratio: "16:9 (Landscape Widescreen)", Value: 16.0 / 9.0},
+	{Ratio: "16:9 (Widescreen)", Value: 16.0 / 9.0},
 	{Ratio: "1:1 (Square)", Value: 1.0},
 }
 
@@ -732,7 +732,7 @@ func h3ParametersFromSize(size string) (string, any, error) {
 	case "9:16", "portrait":
 		return "9:16 (Portrait Widescreen)", defaultMegapixels, nil
 	case "16:9", "landscape":
-		return "16:9 (Landscape Widescreen)", defaultMegapixels, nil
+		return "16:9 (Widescreen)", defaultMegapixels, nil
 	case "1:1", "square":
 		return "1:1 (Square)", defaultMegapixels, nil
 	}
@@ -740,7 +740,7 @@ func h3ParametersFromSize(size string) (string, any, error) {
 		height, err := strconv.Atoi(strings.TrimSuffix(s, "p"))
 		if err == nil && height >= 352 && height <= 1080 {
 			width := int(math.Round(float64(height) * 16.0 / 9.0))
-			return "16:9 (Landscape Widescreen)", nearestH3Megapixels(width, height), nil
+			return "16:9 (Widescreen)", nearestH3Megapixels(width, height), nil
 		}
 	}
 
@@ -861,8 +861,8 @@ func normalizeAspectRatio(value string) (string, error) {
 	switch s {
 	case "9:16", "9:16 (portrait widescreen)", "portrait":
 		return "9:16 (Portrait Widescreen)", nil
-	case "16:9", "16:9 (landscape widescreen)", "landscape":
-		return "16:9 (Landscape Widescreen)", nil
+	case "16:9", "16:9 (widescreen)", "16:9 (landscape widescreen)", "landscape":
+		return "16:9 (Widescreen)", nil
 	case "1:1", "1:1 (square)", "square":
 		return "1:1 (Square)", nil
 	default:

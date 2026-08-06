@@ -24,7 +24,7 @@ import (
 func TestSelectorFromRequestMapsStandardSizesAndMetadataOverrides(t *testing.T) {
 	selector, err := selectorFromRequest(relaycommon.TaskSubmitReq{Size: "1280x720"})
 	require.NoError(t, err)
-	require.Equal(t, h3Selector{AspectRatio: "16:9 (Landscape Widescreen)", Megapixels: 0.9, Multiple: defaultMultiple}, selector)
+	require.Equal(t, h3Selector{AspectRatio: "16:9 (Widescreen)", Megapixels: 0.9, Multiple: defaultMultiple}, selector)
 
 	selector, err = selectorFromRequest(relaycommon.TaskSubmitReq{
 		Size: "1024x1024",
@@ -53,13 +53,13 @@ func TestSelectorFromRequestMapsResolutionAndClarityToH3Megapixels(t *testing.T)
 		{
 			name:    "table 720p landscape",
 			req:     relaycommon.TaskSubmitReq{Size: "1280x736"},
-			aspect:  "16:9 (Landscape Widescreen)",
+			aspect:  "16:9 (Widescreen)",
 			megapix: 0.9,
 		},
 		{
 			name:    "standard 1080p landscape",
 			req:     relaycommon.TaskSubmitReq{Size: "1920x1080"},
-			aspect:  "16:9 (Landscape Widescreen)",
+			aspect:  "16:9 (Widescreen)",
 			megapix: 2.0,
 		},
 		{
@@ -71,13 +71,13 @@ func TestSelectorFromRequestMapsResolutionAndClarityToH3Megapixels(t *testing.T)
 		{
 			name:    "custom resolution field",
 			req:     relaycommon.TaskSubmitReq{Metadata: map[string]any{"resolution": "1344x768"}},
-			aspect:  "16:9 (Landscape Widescreen)",
+			aspect:  "16:9 (Widescreen)",
 			megapix: 0.98,
 		},
 		{
 			name:    "standard 720p resolution label",
 			req:     relaycommon.TaskSubmitReq{Metadata: map[string]any{"resolution": "720P"}},
-			aspect:  "16:9 (Landscape Widescreen)",
+			aspect:  "16:9 (Widescreen)",
 			megapix: 0.9,
 		},
 		{
@@ -89,13 +89,13 @@ func TestSelectorFromRequestMapsResolutionAndClarityToH3Megapixels(t *testing.T)
 		{
 			name:    "clarity resolution label",
 			req:     relaycommon.TaskSubmitReq{Metadata: map[string]any{"clarity": "1080P"}},
-			aspect:  "16:9 (Landscape Widescreen)",
+			aspect:  "16:9 (Widescreen)",
 			megapix: 2.0,
 		},
 		{
 			name:    "explicit megapixels overrides resolution",
 			req:     relaycommon.TaskSubmitReq{Size: "1920x1080", Metadata: map[string]any{"megapixels": "0.5"}},
-			aspect:  "16:9 (Landscape Widescreen)",
+			aspect:  "16:9 (Widescreen)",
 			megapix: 0.5,
 		},
 	}
@@ -138,7 +138,7 @@ func TestSelectorFromRequestMapsEveryH3LandscapePreset(t *testing.T) {
 		t.Run(tt.size, func(t *testing.T) {
 			selector, err := selectorFromRequest(relaycommon.TaskSubmitReq{Size: tt.size})
 			require.NoError(t, err)
-			require.Equal(t, "16:9 (Landscape Widescreen)", selector.AspectRatio)
+			require.Equal(t, "16:9 (Widescreen)", selector.AspectRatio)
 			require.Equal(t, tt.megapixel, selector.Megapixels)
 		})
 	}
@@ -159,7 +159,7 @@ func TestSelectorFromRequestUsesTopLevelResolution(t *testing.T) {
 
 		selector, err := selectorFromRequest(req)
 		require.NoError(t, err)
-		require.Equal(t, "16:9 (Landscape Widescreen)", selector.AspectRatio)
+		require.Equal(t, "16:9 (Widescreen)", selector.AspectRatio)
 		require.Equal(t, tt.megapixels, selector.Megapixels)
 	}
 }
