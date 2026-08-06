@@ -79,6 +79,33 @@ func TestSelectorFromRequestMapsEveryH3AspectRatio(t *testing.T) {
 	selector, err := selectorFromRequest(relaycommon.TaskSubmitReq{Size: "21:9 (Ultrawide)"})
 	require.NoError(t, err)
 	require.Equal(t, "21:9 (Ultrawide)", selector.AspectRatio)
+
+	aliases := []struct {
+		name   string
+		value  string
+		aspect string
+	}{
+		{name: "portrait photo", value: "portrait photo", aspect: "2:3 (Portrait Photo)"},
+		{name: "photo", value: "photo", aspect: "3:2 (Photo)"},
+		{name: "portrait standard", value: "portrait standard", aspect: "3:4 (Portrait Standard)"},
+		{name: "standard", value: "standard", aspect: "4:3 (Standard)"},
+		{name: "ultrawide", value: "ultrawide", aspect: "21:9 (Ultrawide)"},
+	}
+	for _, tt := range aliases {
+		t.Run("size alias "+tt.name, func(t *testing.T) {
+			selector, err := selectorFromRequest(relaycommon.TaskSubmitReq{Size: tt.value})
+			require.NoError(t, err)
+			require.Equal(t, tt.aspect, selector.AspectRatio)
+		})
+
+		t.Run("metadata alias "+tt.name, func(t *testing.T) {
+			selector, err := selectorFromRequest(relaycommon.TaskSubmitReq{
+				Metadata: map[string]any{"aspect_ratio": tt.value},
+			})
+			require.NoError(t, err)
+			require.Equal(t, tt.aspect, selector.AspectRatio)
+		})
+	}
 }
 
 func TestSelectorFromRequestMapsResolutionAndClarityToH3Megapixels(t *testing.T) {
