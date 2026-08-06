@@ -485,6 +485,10 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 		return fmt.Errorf("New API channel base URL cannot be empty")
 	}
 
+	if channel.Type == constant.ChannelTypeRunningHub && strings.TrimSpace(channel.GetOtherSettings().RunningHubWorkflowID) == "" {
+		return fmt.Errorf("RunningHub workflow ID cannot be empty")
+	}
+
 	// 如果是添加操作，检查 channel 和 key 是否为空
 	if isAdd {
 		if channel.Key == "" {

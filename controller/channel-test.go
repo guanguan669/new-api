@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -47,7 +48,7 @@ func normalizeChannelTestEndpoint(channel *model.Channel, modelName, endpointTyp
 	if normalized != "" {
 		return normalized
 	}
-	if channel != nil && channel.Type == constant.ChannelTypeKuocai {
+	if channel != nil && (channel.Type == constant.ChannelTypeKuocai || channel.Type == constant.ChannelTypeRunningHub) {
 		return string(constant.EndpointTypeOpenAIVideo)
 	}
 	if strings.HasSuffix(modelName, ratio_setting.CompactModelSuffix) {
@@ -82,6 +83,9 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 	}
 	if channel != nil && channel.Type == constant.ChannelTypeKuocai {
 		return testKuocaiChannel(ctx, channel)
+	}
+	if channel != nil && channel.Type == constant.ChannelTypeRunningHub {
+		return testRunningHubChannel(ctx, channel)
 	}
 	tik := time.Now()
 	var unsupportedTestChannelTypes = []int{
@@ -1126,4 +1130,75 @@ func TestAllChannels(c *gin.Context) {
 			"status":  task.Status,
 		},
 	})
+}
+
+func testRunningHubChannel(ctx context.Context, channel *model.Channel) testResult {
+	baseURL := strings.TrimSpace(channel.GetBaseURL())
+	if baseURL == "" {
+		return testResult{localErr: errors.New("RunningHub channel base URL is empty")}
+	}
+	key := strings.TrimSpace(channel.Key)
+	if key == "" {
+		return testResult{localErr: errors.New("RunningHub channel key is empty")}
+	}
+	workflowID := strings.TrimSpace(channel.GetOtherSettings().RunningHubWorkflowID)
+	if workflowID == "" {
+		return testResult{localErr: errors.New("RunningHub workflow ID cannot be empty")}
+	}
+
+	requestBody, err := common.Marshal(map[string]string{
+		"apiKey":     key,
+		"workflowId": workflowID,
+	})
+	if err != nil {
+		return testResult{localErr: err}
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+"/api/openapi/getJsonApiFormat", bytes.NewReader(requestBody))
+	if err != nil {
+		return testResult{localErr: err}
+	}
+	request.Header.Set("Authorization", "Bearer "+key)
+	request.Header.Set("Content-Type", "application/json")
+
+	client, err := service.NewProxyHttpClient(channel.GetSetting().Proxy)
+	if err != nil {
+		return testResult{localErr: err}
+	}
+	resp, err := client.Do(request)
+	if err != nil {
+		return testResult{localErr: redactRunningHubKey(err, key)}
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return testResult{localErr: err}
+	}
+	if resp.StatusCode != http.StatusOK {
+		message := strings.TrimSpace(string(body))
+		if len(message) > 200 {
+			message = message[:200]
+		}
+		if message == "" {
+			message = http.StatusText(resp.StatusCode)
+		}
+		return testResult{localErr: redactRunningHubKey(fmt.Errorf("RunningHub API format check failed: status %d: %s", resp.StatusCode, message), key)}
+	}
+	if err := validateRunningHubAPIFormatResponse(body); err != nil {
+		return testResult{localErr: redactRunningHubKey(err, key)}
+	}
+	return testResult{}
+}
+
+func redactRunningHubKey(err error, key string) error {
+	if err == nil {
+		return nil
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return err
+	}
+	message := strings.ReplaceAll(err.Error(), key, "[REDACTED]")
+	message = strings.ReplaceAll(message, url.QueryEscape(key), "[REDACTED]")
+	message = strings.ReplaceAll(message, url.PathEscape(key), "[REDACTED]")
+	return errors.New(message)
 }

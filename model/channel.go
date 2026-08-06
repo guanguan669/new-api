@@ -964,6 +964,9 @@ func (channel *Channel) ValidateSettings() error {
 			return err
 		}
 	}
+	if channel.Type == constant.ChannelTypeRunningHub && strings.TrimSpace(channelOtherSettings.RunningHubWorkflowID) == "" {
+		return fmt.Errorf("RunningHub workflow ID cannot be empty")
+	}
 	if channel.Type == constant.ChannelTypeAdvancedCustom {
 		if channelOtherSettings.AdvancedCustom == nil {
 			return fmt.Errorf("advanced_custom is required")

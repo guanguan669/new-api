@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -353,6 +354,10 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 		return fetchKuocaiUpstreamModelIDs(channel, baseURL)
 	}
 
+	if channel.Type == constant.ChannelTypeRunningHub {
+		return fetchRunningHubUpstreamModelIDs(channel, baseURL)
+	}
+
 	if channel.Type == constant.ChannelTypeGemini {
 		key, _, apiErr := channel.GetNextEnabledKey()
 		if apiErr != nil {
@@ -427,6 +432,70 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 		return item.ID
 	})
 	return normalizeModelNames(ids), nil
+}
+
+func fetchRunningHubUpstreamModelIDs(channel *model.Channel, baseURL string) ([]string, error) {
+	key, _, apiErr := channel.GetNextEnabledKey()
+	if apiErr != nil {
+		return nil, fmt.Errorf("failed to get RunningHub channel key: %w", apiErr)
+	}
+	key = strings.TrimSpace(key)
+	workflowID := strings.TrimSpace(channel.GetOtherSettings().RunningHubWorkflowID)
+	if workflowID == "" {
+		return nil, fmt.Errorf("RunningHub workflow ID cannot be empty")
+	}
+
+	body, err := fetchRunningHubAPIFormat(channel, baseURL, key, workflowID)
+	if err != nil {
+		return nil, sanitizeFetchModelsError(err, key)
+	}
+	if err := validateRunningHubAPIFormatResponse(body); err != nil {
+		return nil, sanitizeFetchModelsError(err, key)
+	}
+	return []string{"minimax_h3"}, nil
+}
+
+func fetchRunningHubAPIFormat(channel *model.Channel, baseURL string, key string, workflowID string) ([]byte, error) {
+	payload, err := common.Marshal(map[string]string{
+		"apiKey":     key,
+		"workflowId": workflowID,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	requestURL := strings.TrimRight(baseURL, "/") + "/api/openapi/getJsonApiFormat"
+	request, err := http.NewRequest(http.MethodPost, requestURL, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Authorization", "Bearer "+key)
+	request.Header.Set("Content-Type", "application/json")
+
+	client, err := service.NewProxyHttpClient(channel.GetSetting().Proxy)
+	if err != nil {
+		return nil, err
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	body, readErr := io.ReadAll(response.Body)
+	if readErr != nil {
+		return nil, readErr
+	}
+	if response.StatusCode != http.StatusOK {
+		message := strings.TrimSpace(string(body))
+		if len(message) > 200 {
+			message = message[:200]
+		}
+		if message == "" {
+			message = http.StatusText(response.StatusCode)
+		}
+		return nil, fmt.Errorf("RunningHub API format check failed: status %d: %s", response.StatusCode, message)
+	}
+	return body, nil
 }
 
 func fetchKuocaiUpstreamModelIDs(channel *model.Channel, baseURL string) ([]string, error) {

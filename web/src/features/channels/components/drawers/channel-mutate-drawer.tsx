@@ -143,6 +143,7 @@ import {
   CHANNEL_TYPE_WARNINGS,
   ERROR_MESSAGES,
   FIELD_DESCRIPTIONS,
+  CHANNEL_TYPE_RUNNINGHUB,
   FIELD_PLACEHOLDERS,
   MODEL_FETCHABLE_TYPES,
 } from '../../constants'
@@ -150,6 +151,7 @@ import { useChannelMutateForm } from '../../hooks/use-channel-mutate-form'
 import {
   CHANNEL_FORM_DEFAULT_VALUES,
   CHANNEL_TYPE_ADVANCED_CUSTOM,
+  RUNNINGHUB_DEFAULT_WORKFLOW_ID,
   channelFormSchema,
   channelsQueryKeys,
   getAdvancedCustomStats,
@@ -281,6 +283,7 @@ const SENSITIVE_FORM_FIELDS = [
   'vertex_key_type',
   'aws_key_type',
   'azure_responses_version',
+  'runninghub_workflow_id',
   'force_format',
   'thinking_to_content',
   'proxy',
@@ -727,6 +730,7 @@ export function ChannelMutateDrawer({
   const currentModels = form.watch('models')
   const currentName = form.watch('name')
   const currentModelMapping = form.watch('model_mapping')
+  const currentRunningHubWorkflowId = form.watch('runninghub_workflow_id')
   const awsKeyType = form.watch('aws_key_type')
   const vertexKeyType = form.watch('vertex_key_type')
   const upstreamModelUpdateCheckEnabled = form.watch(
@@ -959,7 +963,8 @@ export function ChannelMutateDrawer({
     formErrors.key_mode ||
     formErrors.vertex_key_type ||
     formErrors.aws_key_type ||
-    formErrors.azure_responses_version
+    formErrors.azure_responses_version ||
+    formErrors.runninghub_workflow_id
   )
   const modelsHaveErrors = Boolean(
     formErrors.models || formErrors.group || formErrors.model_mapping
@@ -968,11 +973,13 @@ export function ChannelMutateDrawer({
     hasAdvancedSettingsErrors(formErrors) || Boolean(formErrors.advanced_custom)
   const providerRequiresBaseUrl = [3, 8, 36, 45].includes(currentType)
   const providerRequiresOther = [3, 18, 21, 39, 41, 49].includes(currentType)
+  const providerRequiresWorkflowId = currentType === CHANNEL_TYPE_RUNNINGHUB
   const identityComplete = Boolean(currentName?.trim() && currentType > 0)
   const credentialsComplete = Boolean(
     (isEditing || currentKey?.trim()) &&
     (!providerRequiresBaseUrl || currentBaseUrl?.trim()) &&
-    (!providerRequiresOther || currentOther?.trim())
+    (!providerRequiresOther || currentOther?.trim()) &&
+    (!providerRequiresWorkflowId || currentRunningHubWorkflowId?.trim())
   )
   const modelsComplete = Boolean(
     currentModelsArray.length > 0 && currentGroups?.length
@@ -1275,6 +1282,18 @@ export function ChannelMutateDrawer({
       const currentBaseUrlValue = form.getValues('base_url')
       if (!currentBaseUrlValue || currentBaseUrlValue === '') {
         form.setValue('base_url', 'https://ark.cn-beijing.volces.com')
+      }
+    }
+
+    // Type 62 (RunningHub) - set default workflow ID
+    if (currentType === CHANNEL_TYPE_RUNNINGHUB) {
+      const currentWorkflowId = form.getValues('runninghub_workflow_id')
+      if (!currentWorkflowId || currentWorkflowId === '') {
+        form.setValue(
+          'runninghub_workflow_id',
+          RUNNINGHUB_DEFAULT_WORKFLOW_ID,
+          { shouldDirty: true, shouldValidate: true }
+        )
       }
     }
 
@@ -2344,6 +2363,35 @@ export function ChannelMutateDrawer({
                                         : t(
                                             'AK/SK mode: use AccessKey|SecretAccessKey|Region'
                                           )}
+                                    </FormDescription>
+                                    <FormMessage />
+                                  </FormItem>
+                                )}
+                              />
+                            )}
+
+                            {/* RunningHub (type 62) */}
+                            {currentType === CHANNEL_TYPE_RUNNINGHUB && (
+                              <FormField
+                                control={form.control}
+                                name='runninghub_workflow_id'
+                                render={({ field }) => (
+                                  <FormItem>
+                                    <FormLabel>
+                                      {t('RunningHub Workflow ID *')}
+                                    </FormLabel>
+                                    <FormControl>
+                                      <Input
+                                        placeholder={
+                                          RUNNINGHUB_DEFAULT_WORKFLOW_ID
+                                        }
+                                        {...field}
+                                      />
+                                    </FormControl>
+                                    <FormDescription>
+                                      {t(
+                                        'Channel key is your RunningHub API key. The workflow ID selects the H3 OpenAI video workflow.'
+                                      )}
                                     </FormDescription>
                                     <FormMessage />
                                   </FormItem>
@@ -4233,9 +4281,7 @@ export function ChannelMutateDrawer({
                                         <SelectValue />
                                       </SelectTrigger>
                                     </FormControl>
-                                    <SelectContent
-                                      alignItemWithTrigger={false}
-                                    >
+                                    <SelectContent alignItemWithTrigger={false}>
                                       <SelectGroup>
                                         <SelectItem value='auto'>
                                           {t('Auto')}

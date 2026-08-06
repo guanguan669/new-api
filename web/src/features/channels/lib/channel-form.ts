@@ -20,6 +20,7 @@ import { z } from 'zod'
 
 import {
   CHANNEL_TYPE_NEW_API,
+  CHANNEL_TYPE_RUNNINGHUB,
   CHANNEL_STATUS,
   ERROR_MESSAGES,
   MODEL_FETCHABLE_TYPES,
@@ -73,6 +74,7 @@ function isOptionalProxyURL(value: string | undefined): boolean {
 export const HTTP_PROTOCOL_AUTO = 'auto'
 export const HTTP_PROTOCOL_HTTP1 = 'http1'
 export const MAX_HTTP2_CONNECTION_SHARDS = 8
+export const RUNNINGHUB_DEFAULT_WORKFLOW_ID = '2085203051589230594'
 
 export function normalizeHttpProtocol(
   value: string | undefined | null
@@ -266,6 +268,7 @@ export const channelFormSchema = z
     vertex_key_type: z.enum(['json', 'api_key']).optional(), // Vertex AI specific
     aws_key_type: z.enum(['ak_sk', 'api_key']).optional(), // AWS specific
     azure_responses_version: z.string().optional(), // Azure specific
+    runninghub_workflow_id: z.string().optional(), // RunningHub specific
     // Field passthrough controls (stored in settings JSON)
     allow_service_tier: z.boolean().optional(), // OpenAI/Anthropic
     disable_store: z.boolean().optional(), // OpenAI only
@@ -328,6 +331,17 @@ export const channelFormSchema = z
         ctx,
         'other',
         'This channel type requires additional configuration'
+      )
+    }
+
+    if (
+      data.type === CHANNEL_TYPE_RUNNINGHUB &&
+      !data.runninghub_workflow_id?.trim()
+    ) {
+      addRequiredIssue(
+        ctx,
+        'runninghub_workflow_id',
+        'RunningHub Workflow ID is required'
       )
     }
 
@@ -438,6 +452,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   vertex_key_type: 'json',
   aws_key_type: 'ak_sk',
   azure_responses_version: '',
+  runninghub_workflow_id: '',
   // Field passthrough controls
   allow_service_tier: false,
   disable_store: false,
@@ -487,8 +502,7 @@ export function transformChannelToFormDefaults(
         thinking_to_content: parsed.thinking_to_content || false,
         proxy: parsed.proxy || '',
         http_protocol: protocol,
-        http2_connection_shards:
-          protocol === HTTP_PROTOCOL_HTTP1 ? 1 : shards,
+        http2_connection_shards: protocol === HTTP_PROTOCOL_HTTP1 ? 1 : shards,
         pass_through_body_enabled: parsed.pass_through_body_enabled || false,
         system_prompt: parsed.system_prompt || '',
         system_prompt_override: parsed.system_prompt_override || false,
@@ -516,6 +530,7 @@ export function transformChannelToFormDefaults(
   let upstreamModelUpdateAutoSyncEnabled = false
   let upstreamModelUpdateIgnoredModels = ''
   let advancedCustom = ''
+  let runninghubWorkflowId = ''
 
   if (channel.settings) {
     try {
@@ -541,6 +556,7 @@ export function transformChannelToFormDefaults(
       )
         ? parsed.upstream_model_update_ignored_models.join(',')
         : ''
+      runninghubWorkflowId = parsed.runninghub_workflow_id || ''
       if (parsed.advanced_custom) {
         advancedCustom = stringifyAdvancedCustomConfig(parsed.advanced_custom)
       }
@@ -595,6 +611,7 @@ export function transformChannelToFormDefaults(
     upstream_model_update_auto_sync_enabled: upstreamModelUpdateAutoSyncEnabled,
     upstream_model_update_ignored_models: upstreamModelUpdateIgnoredModels,
     advanced_custom: advancedCustom,
+    runninghub_workflow_id: runninghubWorkflowId,
   }
 }
 
@@ -669,6 +686,14 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     settingsObj.aws_key_type = formData.aws_key_type || 'ak_sk'
   } else if ('aws_key_type' in settingsObj) {
     delete settingsObj.aws_key_type
+  }
+
+  // Add workflow ID for RunningHub channels (type 62)
+  if (formData.type === CHANNEL_TYPE_RUNNINGHUB) {
+    settingsObj.runninghub_workflow_id =
+      formData.runninghub_workflow_id?.trim() || RUNNINGHUB_DEFAULT_WORKFLOW_ID
+  } else if ('runninghub_workflow_id' in settingsObj) {
+    delete settingsObj.runninghub_workflow_id
   }
 
   // Field passthrough controls:

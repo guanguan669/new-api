@@ -164,6 +164,16 @@ export const CHANNEL_TYPE_CONFIGS: Record<number, ChannelTypeConfig> = {
       models: 'Models',
     },
   },
+  62: {
+    id: 62,
+    name: CHANNEL_TYPES[62],
+    icon: 'OpenAI',
+    hints: {
+      key: 'RunningHub API Key',
+      models: 'minimax_h3',
+      other: 'Workflow ID is stored in channel settings',
+    },
+  },
 }
 
 /**
