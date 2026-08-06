@@ -110,6 +110,7 @@ export interface ChannelOtherSettings {
   upstream_model_update_last_detected_models?: string[]
   advanced_custom?: AdvancedCustomConfig
   runninghub_workflow_id?: string
+  runninghub_text_workflow_id?: string
 }
 
 export interface AdvancedCustomConfig {

@@ -27,6 +27,7 @@ import {
 import type { Channel } from '../../types'
 import {
   CHANNEL_FORM_DEFAULT_VALUES,
+  RUNNINGHUB_DEFAULT_TEXT_WORKFLOW_ID,
   RUNNINGHUB_DEFAULT_WORKFLOW_ID,
   channelFormSchema,
   transformChannelToFormDefaults,
@@ -35,7 +36,10 @@ import {
 import { getChannelTypeConfig } from '../channel-type-config'
 import { getChannelTypeIcon, getKeyPromptForType } from '../channel-utils'
 
-function runningHubForm(workflowId = RUNNINGHUB_DEFAULT_WORKFLOW_ID) {
+function runningHubForm(
+  workflowId = RUNNINGHUB_DEFAULT_WORKFLOW_ID,
+  textWorkflowId = RUNNINGHUB_DEFAULT_TEXT_WORKFLOW_ID
+) {
   return {
     ...CHANNEL_FORM_DEFAULT_VALUES,
     name: 'RunningHub H3',
@@ -43,6 +47,7 @@ function runningHubForm(workflowId = RUNNINGHUB_DEFAULT_WORKFLOW_ID) {
     key: 'runninghub-api-key',
     models: 'minimax_h3',
     runninghub_workflow_id: workflowId,
+    runninghub_text_workflow_id: textWorkflowId,
   }
 }
 
@@ -87,17 +92,34 @@ describe('RunningHub channel', () => {
       )
     }
 
+    const blankTextResult = channelFormSchema.safeParse(
+      runningHubForm(RUNNINGHUB_DEFAULT_WORKFLOW_ID, '  ')
+    )
+    assert.equal(blankTextResult.success, false)
+    if (!blankTextResult.success) {
+      assert.equal(
+        blankTextResult.error.issues.some(
+          (issue) =>
+            issue.path[0] === 'runninghub_text_workflow_id' &&
+            issue.message === 'RunningHub text-to-video Workflow ID is required'
+        ),
+        true
+      )
+    }
+
     assert.equal(channelFormSchema.safeParse(runningHubForm()).success, true)
   })
 
   test('builds and cleans RunningHub workflow settings', () => {
     const runningHubPayload = transformFormDataToCreatePayload({
       ...runningHubForm('  123456  '),
-      settings: '{"preserved":true,"runninghub_workflow_id":"old"}',
+      settings:
+        '{"preserved":true,"runninghub_workflow_id":"old","runninghub_text_workflow_id":"old-text"}',
     })
     assert.deepEqual(JSON.parse(runningHubPayload.channel.settings || '{}'), {
       preserved: true,
       runninghub_workflow_id: '123456',
+      runninghub_text_workflow_id: RUNNINGHUB_DEFAULT_TEXT_WORKFLOW_ID,
       disable_task_polling_sleep: false,
       upstream_model_update_check_enabled: false,
       upstream_model_update_auto_sync_enabled: false,
@@ -109,7 +131,8 @@ describe('RunningHub channel', () => {
     const otherPayload = transformFormDataToCreatePayload({
       ...runningHubForm('123456'),
       type: 1,
-      settings: '{"preserved":true,"runninghub_workflow_id":"old"}',
+      settings:
+        '{"preserved":true,"runninghub_workflow_id":"old","runninghub_text_workflow_id":"old-text"}',
     })
     assert.deepEqual(JSON.parse(otherPayload.channel.settings || '{}'), {
       preserved: true,
@@ -136,7 +159,8 @@ describe('RunningHub channel', () => {
       status: 1,
       models: 'minimax_h3',
       group: 'default',
-      settings: '{"runninghub_workflow_id":"987654"}',
+      settings:
+        '{"runninghub_workflow_id":"987654","runninghub_text_workflow_id":"654321"}',
       channel_info: {
         is_multi_key: false,
         multi_key_size: 0,
@@ -146,5 +170,6 @@ describe('RunningHub channel', () => {
     } as Channel)
 
     assert.equal(formDefaults.runninghub_workflow_id, '987654')
+    assert.equal(formDefaults.runninghub_text_workflow_id, '654321')
   })
 })

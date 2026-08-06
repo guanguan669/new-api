@@ -152,6 +152,7 @@ import {
   CHANNEL_FORM_DEFAULT_VALUES,
   CHANNEL_TYPE_ADVANCED_CUSTOM,
   RUNNINGHUB_DEFAULT_WORKFLOW_ID,
+  RUNNINGHUB_DEFAULT_TEXT_WORKFLOW_ID,
   channelFormSchema,
   channelsQueryKeys,
   getAdvancedCustomStats,
@@ -284,6 +285,7 @@ const SENSITIVE_FORM_FIELDS = [
   'aws_key_type',
   'azure_responses_version',
   'runninghub_workflow_id',
+  'runninghub_text_workflow_id',
   'force_format',
   'thinking_to_content',
   'proxy',
@@ -731,6 +733,9 @@ export function ChannelMutateDrawer({
   const currentName = form.watch('name')
   const currentModelMapping = form.watch('model_mapping')
   const currentRunningHubWorkflowId = form.watch('runninghub_workflow_id')
+  const currentRunningHubTextWorkflowId = form.watch(
+    'runninghub_text_workflow_id'
+  )
   const awsKeyType = form.watch('aws_key_type')
   const vertexKeyType = form.watch('vertex_key_type')
   const upstreamModelUpdateCheckEnabled = form.watch(
@@ -964,7 +969,8 @@ export function ChannelMutateDrawer({
     formErrors.vertex_key_type ||
     formErrors.aws_key_type ||
     formErrors.azure_responses_version ||
-    formErrors.runninghub_workflow_id
+    formErrors.runninghub_workflow_id ||
+    formErrors.runninghub_text_workflow_id
   )
   const modelsHaveErrors = Boolean(
     formErrors.models || formErrors.group || formErrors.model_mapping
@@ -979,7 +985,9 @@ export function ChannelMutateDrawer({
     (isEditing || currentKey?.trim()) &&
     (!providerRequiresBaseUrl || currentBaseUrl?.trim()) &&
     (!providerRequiresOther || currentOther?.trim()) &&
-    (!providerRequiresWorkflowId || currentRunningHubWorkflowId?.trim())
+    (!providerRequiresWorkflowId ||
+      (currentRunningHubWorkflowId?.trim() &&
+        currentRunningHubTextWorkflowId?.trim()))
   )
   const modelsComplete = Boolean(
     currentModelsArray.length > 0 && currentGroups?.length
@@ -1292,6 +1300,16 @@ export function ChannelMutateDrawer({
         form.setValue(
           'runninghub_workflow_id',
           RUNNINGHUB_DEFAULT_WORKFLOW_ID,
+          { shouldDirty: true, shouldValidate: true }
+        )
+      }
+      const currentTextWorkflowId = form.getValues(
+        'runninghub_text_workflow_id'
+      )
+      if (!currentTextWorkflowId || currentTextWorkflowId === '') {
+        form.setValue(
+          'runninghub_text_workflow_id',
+          RUNNINGHUB_DEFAULT_TEXT_WORKFLOW_ID,
           { shouldDirty: true, shouldValidate: true }
         )
       }
@@ -2372,31 +2390,62 @@ export function ChannelMutateDrawer({
 
                             {/* RunningHub (type 62) */}
                             {currentType === CHANNEL_TYPE_RUNNINGHUB && (
-                              <FormField
-                                control={form.control}
-                                name='runninghub_workflow_id'
-                                render={({ field }) => (
-                                  <FormItem>
-                                    <FormLabel>
-                                      {t('RunningHub Workflow ID *')}
-                                    </FormLabel>
-                                    <FormControl>
-                                      <Input
-                                        placeholder={
-                                          RUNNINGHUB_DEFAULT_WORKFLOW_ID
-                                        }
-                                        {...field}
-                                      />
-                                    </FormControl>
-                                    <FormDescription>
-                                      {t(
-                                        'Channel key is your RunningHub API key. The workflow ID selects the H3 OpenAI video workflow.'
-                                      )}
-                                    </FormDescription>
-                                    <FormMessage />
-                                  </FormItem>
-                                )}
-                              />
+                              <>
+                                <FormField
+                                  control={form.control}
+                                  name='runninghub_workflow_id'
+                                  render={({ field }) => (
+                                    <FormItem>
+                                      <FormLabel>
+                                        {t(
+                                          'RunningHub Image-to-Video Workflow ID *'
+                                        )}
+                                      </FormLabel>
+                                      <FormControl>
+                                        <Input
+                                          placeholder={
+                                            RUNNINGHUB_DEFAULT_WORKFLOW_ID
+                                          }
+                                          {...field}
+                                        />
+                                      </FormControl>
+                                      <FormDescription>
+                                        {t(
+                                          'Used automatically when the downstream request includes one or more reference images.'
+                                        )}
+                                      </FormDescription>
+                                      <FormMessage />
+                                    </FormItem>
+                                  )}
+                                />
+                                <FormField
+                                  control={form.control}
+                                  name='runninghub_text_workflow_id'
+                                  render={({ field }) => (
+                                    <FormItem>
+                                      <FormLabel>
+                                        {t(
+                                          'RunningHub Text-to-Video Workflow ID *'
+                                        )}
+                                      </FormLabel>
+                                      <FormControl>
+                                        <Input
+                                          placeholder={
+                                            RUNNINGHUB_DEFAULT_TEXT_WORKFLOW_ID
+                                          }
+                                          {...field}
+                                        />
+                                      </FormControl>
+                                      <FormDescription>
+                                        {t(
+                                          'Used automatically when the downstream request does not include reference images.'
+                                        )}
+                                      </FormDescription>
+                                      <FormMessage />
+                                    </FormItem>
+                                  )}
+                                />
+                              </>
                             )}
 
                             {/* AI Proxy Library (type 21) */}

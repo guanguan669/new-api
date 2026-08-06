@@ -25,9 +25,9 @@ func TestRunningHubChannelRegistrationAndValidation(t *testing.T) {
 	assert.Equal(t, "https://www.runninghub.cn", constant.ChannelBaseURLs[constant.ChannelTypeRunningHub])
 
 	channel := &model.Channel{Type: constant.ChannelTypeRunningHub}
-	require.ErrorContains(t, validateChannel(channel, false), "RunningHub workflow ID cannot be empty")
+	require.ErrorContains(t, validateChannel(channel, false), "RunningHub image-to-video workflow ID cannot be empty")
 
-	channel.SetOtherSettings(dto.ChannelOtherSettings{RunningHubWorkflowID: "wf-h3"})
+	channel.SetOtherSettings(dto.ChannelOtherSettings{RunningHubWorkflowID: "wf-image", RunningHubTextWorkflowID: "wf-text"})
 	require.NoError(t, validateChannel(channel, false))
 }
 
@@ -39,9 +39,15 @@ func TestRunningHubChannelTestUsesAPIFormatEndpoint(t *testing.T) {
 		var payload map[string]string
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
 		assert.Equal(t, "rh-test-key", payload["apiKey"])
-		assert.Equal(t, "wf-h3", payload["workflowId"])
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(runningHubH3APIFormatResponse(t))
+		switch payload["workflowId"] {
+		case "wf-image":
+			_, _ = w.Write(runningHubH3APIFormatResponse(t))
+		case "wf-text":
+			_, _ = w.Write(runningHubH3TextAPIFormatResponse(t))
+		default:
+			t.Fatalf("unexpected workflow id %q", payload["workflowId"])
+		}
 	}))
 	defer server.Close()
 
@@ -50,7 +56,7 @@ func TestRunningHubChannelTestUsesAPIFormatEndpoint(t *testing.T) {
 		BaseURL: common.GetPointer(server.URL),
 		Key:     "rh-test-key",
 	}
-	channel.SetOtherSettings(dto.ChannelOtherSettings{RunningHubWorkflowID: "wf-h3"})
+	channel.SetOtherSettings(dto.ChannelOtherSettings{RunningHubWorkflowID: "wf-image", RunningHubTextWorkflowID: "wf-text"})
 
 	result := testChannel(context.Background(), channel, 0, "minimax_h3", "", false)
 	require.NoError(t, result.localErr)
@@ -68,7 +74,7 @@ func TestRunningHubChannelTestRedactsKeyOnError(t *testing.T) {
 		BaseURL: common.GetPointer(server.URL),
 		Key:     "rh-secret-key",
 	}
-	channel.SetOtherSettings(dto.ChannelOtherSettings{RunningHubWorkflowID: "wf-h3"})
+	channel.SetOtherSettings(dto.ChannelOtherSettings{RunningHubWorkflowID: "wf-image", RunningHubTextWorkflowID: "wf-text"})
 
 	result := testChannel(context.Background(), channel, 0, "minimax_h3", "", false)
 	require.Error(t, result.localErr)
@@ -84,9 +90,15 @@ func TestFetchRunningHubModelsValidatesAPIFormatAndReturnsFixedH3(t *testing.T) 
 		var payload map[string]string
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
 		assert.Equal(t, "rh-fetch-key", payload["apiKey"])
-		assert.Equal(t, "wf-h3", payload["workflowId"])
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(runningHubH3APIFormatResponse(t))
+		switch payload["workflowId"] {
+		case "wf-image":
+			_, _ = w.Write(runningHubH3APIFormatResponse(t))
+		case "wf-text":
+			_, _ = w.Write(runningHubH3TextAPIFormatResponse(t))
+		default:
+			t.Fatalf("unexpected workflow id %q", payload["workflowId"])
+		}
 	}))
 	defer server.Close()
 
@@ -95,7 +107,7 @@ func TestFetchRunningHubModelsValidatesAPIFormatAndReturnsFixedH3(t *testing.T) 
 		BaseURL: common.GetPointer(server.URL),
 		Key:     "rh-fetch-key",
 	}
-	channel.SetOtherSettings(dto.ChannelOtherSettings{RunningHubWorkflowID: "wf-h3"})
+	channel.SetOtherSettings(dto.ChannelOtherSettings{RunningHubWorkflowID: "wf-image", RunningHubTextWorkflowID: "wf-text"})
 
 	models, err := fetchChannelUpstreamModelIDs(channel)
 	require.NoError(t, err)
@@ -128,12 +140,31 @@ func TestValidateRunningHubAPIFormatRequiresH3Inputs(t *testing.T) {
 	require.ErrorContains(t, validateRunningHubAPIFormatResponse(broken), "node 138")
 }
 
+func TestValidateRunningHubAPIFormatRejectsCompetingImageOutput(t *testing.T) {
+	body := runningHubH3APIFormatResponse(t)
+	var response map[string]any
+	require.NoError(t, json.Unmarshal(body, &response))
+	prompt := response["data"].(map[string]any)["prompt"].(map[string]any)
+	prompt["603"] = map[string]any{
+		"class_type": "solarL_SaveImagesToZip",
+		"inputs":     map[string]any{"zip": []any{"522", 0}},
+	}
+	broken, err := json.Marshal(response)
+	require.NoError(t, err)
+	require.ErrorContains(t, validateRunningHubAPIFormatResponse(broken), "competing non-video output node 603")
+}
+
+func TestValidateRunningHubTextAPIFormatDoesNotRequireImageNodes(t *testing.T) {
+	require.NoError(t, validateRunningHubAPIFormatResponseForMode(runningHubH3TextAPIFormatResponse(t), common.RunningHubH3WorkflowTextToVideo))
+}
+
 func runningHubH3APIFormatResponse(t *testing.T) []byte {
 	t.Helper()
 	prompt := map[string]any{
 		"138": map[string]any{"inputs": map[string]any{"value": "prompt"}},
 		"132": map[string]any{"inputs": map[string]any{"value": "negative"}},
 		"115": map[string]any{"inputs": map[string]any{"aspect_ratio": "16:9", "megapixels": "1", "multiple": 1}},
+		"92":  map[string]any{"class_type": "SaveVideo", "inputs": map[string]any{"video": []any{"130", 0}}},
 	}
 	for _, nodeID := range []string{"137", "618", "617", "619", "627", "626", "625", "624", "623"} {
 		prompt[nodeID] = map[string]any{"inputs": map[string]any{"image": ""}}
@@ -145,6 +176,22 @@ func runningHubH3APIFormatResponse(t *testing.T) []byte {
 		"code": 0,
 		"data": map[string]any{"prompt": prompt},
 	})
+	require.NoError(t, err)
+	return body
+}
+
+func runningHubH3TextAPIFormatResponse(t *testing.T) []byte {
+	t.Helper()
+	prompt := map[string]any{
+		"138": map[string]any{"inputs": map[string]any{"value": "prompt"}},
+		"132": map[string]any{"inputs": map[string]any{"value": 5}},
+		"115": map[string]any{"inputs": map[string]any{"aspect_ratio": "16:9", "megapixels": 1, "multiple": 32}},
+		"92":  map[string]any{"class_type": "SaveVideo", "inputs": map[string]any{"video": []any{"130", 0}}},
+	}
+	for _, nodeID := range []string{"628", "630", "629"} {
+		prompt[nodeID] = map[string]any{"inputs": map[string]any{"audio": ""}}
+	}
+	body, err := json.Marshal(map[string]any{"code": 0, "data": map[string]any{"prompt": prompt}})
 	require.NoError(t, err)
 	return body
 }

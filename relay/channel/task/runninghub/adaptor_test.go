@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -164,7 +165,7 @@ func TestSelectorFromRequestUsesTopLevelResolution(t *testing.T) {
 }
 
 func TestConvertRequestBuildsH3NodesAndEnforcesLimits(t *testing.T) {
-	adaptor := &TaskAdaptor{baseURL: "https://runninghub.example", workflowID: "wf-1"}
+	adaptor := &TaskAdaptor{baseURL: "https://runninghub.example", imageWorkflowID: "wf-image", textWorkflowID: "wf-text"}
 	ctx := &gin.Context{}
 
 	body, err := adaptor.convertRequest(ctx, relaycommon.TaskSubmitReq{
@@ -177,7 +178,7 @@ func TestConvertRequestBuildsH3NodesAndEnforcesLimits(t *testing.T) {
 	}, "secret-key")
 	require.NoError(t, err)
 	require.Equal(t, "secret-key", body.APIKey)
-	require.Equal(t, "wf-1", body.WorkflowID)
+	require.Equal(t, "wf-image", body.WorkflowID)
 	require.Contains(t, body.NodeInfoList, nodeInfo{NodeID: "138", FieldName: "value", FieldValue: "make a video"})
 	require.Contains(t, body.NodeInfoList, nodeInfo{NodeID: "132", FieldName: "value", FieldValue: 6})
 	require.Contains(t, body.NodeInfoList, nodeInfo{NodeID: "115", FieldName: "aspect_ratio", FieldValue: "9:16 (Portrait Widescreen)"})
@@ -207,6 +208,49 @@ func TestConvertRequestBuildsH3NodesAndEnforcesLimits(t *testing.T) {
 	require.ErrorContains(t, err, "reference video")
 }
 
+func TestConvertRequestUsesTextWorkflowWithoutReferenceImages(t *testing.T) {
+	adaptor := &TaskAdaptor{baseURL: "https://runninghub.example", imageWorkflowID: "wf-image", textWorkflowID: "wf-text"}
+
+	body, err := adaptor.convertRequest(&gin.Context{}, relaycommon.TaskSubmitReq{
+		Prompt:   "make a video from text",
+		Duration: 5,
+		Metadata: map[string]any{"reference_audio": "uploaded-audio.mp3"},
+	}, "secret-key")
+	require.NoError(t, err)
+	require.Equal(t, "wf-text", body.WorkflowID)
+	for _, node := range body.NodeInfoList {
+		require.NotEqual(t, "image", node.FieldName)
+	}
+	require.Contains(t, body.NodeInfoList, nodeInfo{NodeID: "628", FieldName: "audio", FieldValue: "uploaded-audio.mp3"})
+}
+
+func TestWorkflowForRequestRecognizesMultipartReferenceURLs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var formBody bytes.Buffer
+	writer := multipart.NewWriter(&formBody)
+	require.NoError(t, writer.WriteField("input_reference", "https://cdn.example/reference.png"))
+	require.NoError(t, writer.WriteField("reference_images", "stored-image.png"))
+	require.NoError(t, writer.WriteField("reference_audio", "https://cdn.example/reference.mp3"))
+	require.NoError(t, writer.Close())
+
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", &formBody)
+	ctx.Request.Header.Set("Content-Type", writer.FormDataContentType())
+	require.NoError(t, ctx.Request.ParseMultipartForm(1<<20))
+
+	adaptor := &TaskAdaptor{imageWorkflowID: "wf-image", textWorkflowID: "wf-text"}
+	workflowID, mode, err := adaptor.workflowForRequest(ctx, relaycommon.TaskSubmitReq{Prompt: "hello"})
+	require.NoError(t, err)
+	require.Equal(t, "wf-image", workflowID)
+	require.Equal(t, common.RunningHubH3WorkflowImageToVideo, mode)
+
+	images, audios, _, _, err := referenceInputs(ctx, relaycommon.TaskSubmitReq{Prompt: "hello"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"https://cdn.example/reference.png", "stored-image.png"}, images)
+	require.Equal(t, []string{"https://cdn.example/reference.mp3"}, audios)
+}
+
 func TestEstimateBillingUsesRunningHubDuration(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
@@ -227,7 +271,7 @@ func TestRunningHubSecondsNormalizationIsSharedByBillingAndNode132(t *testing.T)
 	ratios := (&TaskAdaptor{}).EstimateBilling(ctx, &relaycommon.RelayInfo{})
 	require.Equal(t, 12.0, ratios["seconds"])
 
-	body, err := (&TaskAdaptor{baseURL: "https://runninghub.example", workflowID: "wf-1"}).convertRequest(ctx, req, "secret-key")
+	body, err := (&TaskAdaptor{baseURL: "https://runninghub.example", textWorkflowID: "wf-text"}).convertRequest(ctx, req, "secret-key")
 	require.NoError(t, err)
 	require.Contains(t, body.NodeInfoList, nodeInfo{NodeID: "132", FieldName: "value", FieldValue: 12})
 }
@@ -260,6 +304,50 @@ func TestH3MegapixelBillingRatio(t *testing.T) {
 	}
 }
 
+func TestEstimateBillingIncludesOnlyReferenceImagesBeyondFive(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	for _, tt := range []struct {
+		name      string
+		req       relaycommon.TaskSubmitReq
+		wantRatio float64
+	}{
+		{
+			name:      "five images are included",
+			req:       relaycommon.TaskSubmitReq{Seconds: "5", Images: []string{"1", "2", "3", "4", "5"}},
+			wantRatio: 1,
+		},
+		{
+			name:      "six images at base quality",
+			req:       relaycommon.TaskSubmitReq{Seconds: "5", Images: []string{"1", "2", "3", "4", "5", "6"}},
+			wantRatio: 1.2,
+		},
+		{
+			name: "six images at quality three",
+			req: relaycommon.TaskSubmitReq{
+				Seconds:  "5",
+				Images:   []string{"1", "2", "3", "4", "5", "6"},
+				Metadata: map[string]any{"megapixels": "2"},
+			},
+			wantRatio: 1 + 1.0/15.0,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(w)
+			ctx.Set("task_request", tt.req)
+
+			ratios := (&TaskAdaptor{}).EstimateBilling(ctx, &relaycommon.RelayInfo{})
+			if tt.wantRatio == 1 {
+				_, exists := ratios["reference_images"]
+				require.False(t, exists)
+				return
+			}
+			require.InDelta(t, tt.wantRatio, ratios["reference_images"], 0.000001)
+		})
+	}
+}
+
 func TestValidateRequestRejectsTooManyMultipartFilesBeforeUpload(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	var form bytes.Buffer
@@ -278,7 +366,7 @@ func TestValidateRequestRejectsTooManyMultipartFilesBeforeUpload(t *testing.T) {
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", &form)
 	ctx.Request.Header.Set("Content-Type", writer.FormDataContentType())
 
-	adaptor := &TaskAdaptor{workflowID: "wf-1"}
+	adaptor := &TaskAdaptor{imageWorkflowID: "wf-image", textWorkflowID: "wf-text"}
 	taskErr := adaptor.ValidateRequestAndSetAction(ctx, &relaycommon.RelayInfo{TaskRelayInfo: &relaycommon.TaskRelayInfo{}})
 	require.NotNil(t, taskErr)
 	require.Equal(t, http.StatusBadRequest, taskErr.StatusCode)
@@ -320,10 +408,33 @@ func TestDoResponseAndParseTaskResult(t *testing.T) {
 	require.Equal(t, string(model.TaskStatusSuccess), info.Status)
 	require.Equal(t, "https://cdn.example/download/opaque-video", info.Url)
 
+	info, err = adaptor.ParseTaskResult([]byte(`{"taskId":"task-zip","status":"SUCCESS","results":[{"url":"https://cdn.example/output.zip","outputType":"zip"}]}`))
+	require.NoError(t, err)
+	require.Equal(t, string(model.TaskStatusFailure), info.Status)
+	require.Empty(t, info.Url)
+	require.Contains(t, info.Reason, "without a video result")
+
 	info, err = adaptor.ParseTaskResult([]byte(`{"code":0,"data":{"status":"FAILED","errorMsg":"bad input"}}`))
 	require.NoError(t, err)
 	require.Equal(t, string(model.TaskStatusFailure), info.Status)
 	require.Equal(t, "bad input", info.Reason)
+}
+
+func TestValidateWorkflowOutputRejectsCompetingImageOutput(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, apiFormatPath, r.URL.Path)
+		var body map[string]string
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		require.Equal(t, "rh-test-key", body["apiKey"])
+		require.Equal(t, "wf-h3", body["workflowId"])
+		_, _ = w.Write([]byte(`{"code":0,"data":{"prompt":{"138":{"inputs":{"value":"prompt"}},"132":{"inputs":{"value":5}},"115":{"inputs":{"aspect_ratio":"16:9","megapixels":1,"multiple":32}},"137":{"inputs":{"image":""}},"618":{"inputs":{"image":""}},"617":{"inputs":{"image":""}},"619":{"inputs":{"image":""}},"627":{"inputs":{"image":""}},"626":{"inputs":{"image":""}},"625":{"inputs":{"image":""}},"624":{"inputs":{"image":""}},"623":{"inputs":{"image":""}},"628":{"inputs":{"audio":""}},"630":{"inputs":{"audio":""}},"629":{"inputs":{"audio":""}},"92":{"class_type":"SaveVideo","inputs":{"video":["130",0]}},"603":{"class_type":"solarL_SaveImagesToZip","inputs":{"zip":["522",0]}}}}}`))
+	}))
+	defer server.Close()
+
+	adaptor := &TaskAdaptor{baseURL: server.URL}
+	err := adaptor.validateWorkflowOutput("rh-test-key", "wf-h3", common.RunningHubH3WorkflowImageToVideo)
+	require.ErrorContains(t, err, "competing non-video output node 603")
 }
 
 func TestDoResponseAndParseTaskResultAcceptV2SuccessCode(t *testing.T) {
@@ -382,7 +493,7 @@ func TestMultipartUploadBuildRequestBody(t *testing.T) {
 	require.NoError(t, ctx.Request.ParseMultipartForm(1<<20))
 	ctx.Set("task_request", relaycommon.TaskSubmitReq{Prompt: "hello"})
 
-	adaptor := &TaskAdaptor{baseURL: server.URL, workflowID: "wf-1"}
+	adaptor := &TaskAdaptor{baseURL: server.URL, imageWorkflowID: "wf-image", textWorkflowID: "wf-text"}
 	reader, err := adaptor.BuildRequestBody(ctx, &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ApiKey: "secret-key"}})
 	require.NoError(t, err)
 	payload, err := io.ReadAll(reader)
@@ -421,7 +532,7 @@ func TestBuildRequestBodyRejectsTooManyMultipartImagesBeforeUpload(t *testing.T)
 	require.NoError(t, ctx.Request.ParseMultipartForm(1<<20))
 	ctx.Set("task_request", relaycommon.TaskSubmitReq{Prompt: "hello"})
 
-	adaptor := &TaskAdaptor{baseURL: server.URL, workflowID: "wf-1"}
+	adaptor := &TaskAdaptor{baseURL: server.URL, imageWorkflowID: "wf-image", textWorkflowID: "wf-text"}
 	_, err := adaptor.BuildRequestBody(ctx, &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ApiKey: "secret-key"}})
 	require.ErrorContains(t, err, "at most 9 reference images")
 	require.Zero(t, uploadCalls)

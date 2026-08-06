@@ -75,6 +75,7 @@ export const HTTP_PROTOCOL_AUTO = 'auto'
 export const HTTP_PROTOCOL_HTTP1 = 'http1'
 export const MAX_HTTP2_CONNECTION_SHARDS = 8
 export const RUNNINGHUB_DEFAULT_WORKFLOW_ID = '2085203051589230594'
+export const RUNNINGHUB_DEFAULT_TEXT_WORKFLOW_ID = '2085414751793930242'
 
 export function normalizeHttpProtocol(
   value: string | undefined | null
@@ -268,7 +269,8 @@ export const channelFormSchema = z
     vertex_key_type: z.enum(['json', 'api_key']).optional(), // Vertex AI specific
     aws_key_type: z.enum(['ak_sk', 'api_key']).optional(), // AWS specific
     azure_responses_version: z.string().optional(), // Azure specific
-    runninghub_workflow_id: z.string().optional(), // RunningHub specific
+    runninghub_workflow_id: z.string().optional(), // RunningHub image-to-video workflow
+    runninghub_text_workflow_id: z.string().optional(), // RunningHub text-to-video workflow
     // Field passthrough controls (stored in settings JSON)
     allow_service_tier: z.boolean().optional(), // OpenAI/Anthropic
     disable_store: z.boolean().optional(), // OpenAI only
@@ -342,6 +344,16 @@ export const channelFormSchema = z
         ctx,
         'runninghub_workflow_id',
         'RunningHub Workflow ID is required'
+      )
+    }
+    if (
+      data.type === CHANNEL_TYPE_RUNNINGHUB &&
+      !data.runninghub_text_workflow_id?.trim()
+    ) {
+      addRequiredIssue(
+        ctx,
+        'runninghub_text_workflow_id',
+        'RunningHub text-to-video Workflow ID is required'
       )
     }
 
@@ -453,6 +465,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   aws_key_type: 'ak_sk',
   azure_responses_version: '',
   runninghub_workflow_id: '',
+  runninghub_text_workflow_id: '',
   // Field passthrough controls
   allow_service_tier: false,
   disable_store: false,
@@ -531,6 +544,7 @@ export function transformChannelToFormDefaults(
   let upstreamModelUpdateIgnoredModels = ''
   let advancedCustom = ''
   let runninghubWorkflowId = ''
+  let runninghubTextWorkflowId = ''
 
   if (channel.settings) {
     try {
@@ -557,6 +571,7 @@ export function transformChannelToFormDefaults(
         ? parsed.upstream_model_update_ignored_models.join(',')
         : ''
       runninghubWorkflowId = parsed.runninghub_workflow_id || ''
+      runninghubTextWorkflowId = parsed.runninghub_text_workflow_id || ''
       if (parsed.advanced_custom) {
         advancedCustom = stringifyAdvancedCustomConfig(parsed.advanced_custom)
       }
@@ -612,6 +627,7 @@ export function transformChannelToFormDefaults(
     upstream_model_update_ignored_models: upstreamModelUpdateIgnoredModels,
     advanced_custom: advancedCustom,
     runninghub_workflow_id: runninghubWorkflowId,
+    runninghub_text_workflow_id: runninghubTextWorkflowId,
   }
 }
 
@@ -692,8 +708,12 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
   if (formData.type === CHANNEL_TYPE_RUNNINGHUB) {
     settingsObj.runninghub_workflow_id =
       formData.runninghub_workflow_id?.trim() || RUNNINGHUB_DEFAULT_WORKFLOW_ID
-  } else if ('runninghub_workflow_id' in settingsObj) {
+    settingsObj.runninghub_text_workflow_id =
+      formData.runninghub_text_workflow_id?.trim() ||
+      RUNNINGHUB_DEFAULT_TEXT_WORKFLOW_ID
+  } else {
     delete settingsObj.runninghub_workflow_id
+    delete settingsObj.runninghub_text_workflow_id
   }
 
   // Field passthrough controls:

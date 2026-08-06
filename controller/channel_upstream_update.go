@@ -440,17 +440,25 @@ func fetchRunningHubUpstreamModelIDs(channel *model.Channel, baseURL string) ([]
 		return nil, fmt.Errorf("failed to get RunningHub channel key: %w", apiErr)
 	}
 	key = strings.TrimSpace(key)
-	workflowID := strings.TrimSpace(channel.GetOtherSettings().RunningHubWorkflowID)
-	if workflowID == "" {
-		return nil, fmt.Errorf("RunningHub workflow ID cannot be empty")
+	settings := channel.GetOtherSettings()
+	workflows := []struct {
+		id   string
+		mode common.RunningHubH3WorkflowMode
+	}{
+		{id: strings.TrimSpace(settings.RunningHubWorkflowID), mode: common.RunningHubH3WorkflowImageToVideo},
+		{id: strings.TrimSpace(settings.RunningHubTextWorkflowID), mode: common.RunningHubH3WorkflowTextToVideo},
 	}
-
-	body, err := fetchRunningHubAPIFormat(channel, baseURL, key, workflowID)
-	if err != nil {
-		return nil, sanitizeFetchModelsError(err, key)
-	}
-	if err := validateRunningHubAPIFormatResponse(body); err != nil {
-		return nil, sanitizeFetchModelsError(err, key)
+	for _, workflow := range workflows {
+		if workflow.id == "" {
+			return nil, fmt.Errorf("RunningHub workflow ID cannot be empty")
+		}
+		body, err := fetchRunningHubAPIFormat(channel, baseURL, key, workflow.id)
+		if err != nil {
+			return nil, sanitizeFetchModelsError(err, key)
+		}
+		if err := validateRunningHubAPIFormatResponseForMode(body, workflow.mode); err != nil {
+			return nil, sanitizeFetchModelsError(err, key)
+		}
 	}
 	return []string{"minimax_h3"}, nil
 }

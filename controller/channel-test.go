@@ -1141,50 +1141,54 @@ func testRunningHubChannel(ctx context.Context, channel *model.Channel) testResu
 	if key == "" {
 		return testResult{localErr: errors.New("RunningHub channel key is empty")}
 	}
-	workflowID := strings.TrimSpace(channel.GetOtherSettings().RunningHubWorkflowID)
-	if workflowID == "" {
-		return testResult{localErr: errors.New("RunningHub workflow ID cannot be empty")}
+	settings := channel.GetOtherSettings()
+	workflows := []struct {
+		id   string
+		mode common.RunningHubH3WorkflowMode
+	}{
+		{id: strings.TrimSpace(settings.RunningHubWorkflowID), mode: common.RunningHubH3WorkflowImageToVideo},
+		{id: strings.TrimSpace(settings.RunningHubTextWorkflowID), mode: common.RunningHubH3WorkflowTextToVideo},
 	}
-
-	requestBody, err := common.Marshal(map[string]string{
-		"apiKey":     key,
-		"workflowId": workflowID,
-	})
-	if err != nil {
-		return testResult{localErr: err}
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+"/api/openapi/getJsonApiFormat", bytes.NewReader(requestBody))
-	if err != nil {
-		return testResult{localErr: err}
-	}
-	request.Header.Set("Authorization", "Bearer "+key)
-	request.Header.Set("Content-Type", "application/json")
-
-	client, err := service.NewProxyHttpClient(channel.GetSetting().Proxy)
-	if err != nil {
-		return testResult{localErr: err}
-	}
-	resp, err := client.Do(request)
-	if err != nil {
-		return testResult{localErr: redactRunningHubKey(err, key)}
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return testResult{localErr: err}
-	}
-	if resp.StatusCode != http.StatusOK {
-		message := strings.TrimSpace(string(body))
-		if len(message) > 200 {
-			message = message[:200]
+	for _, workflow := range workflows {
+		if workflow.id == "" {
+			return testResult{localErr: errors.New("RunningHub workflow ID cannot be empty")}
 		}
-		if message == "" {
-			message = http.StatusText(resp.StatusCode)
+		requestBody, err := common.Marshal(map[string]string{"apiKey": key, "workflowId": workflow.id})
+		if err != nil {
+			return testResult{localErr: err}
 		}
-		return testResult{localErr: redactRunningHubKey(fmt.Errorf("RunningHub API format check failed: status %d: %s", resp.StatusCode, message), key)}
-	}
-	if err := validateRunningHubAPIFormatResponse(body); err != nil {
-		return testResult{localErr: redactRunningHubKey(err, key)}
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+"/api/openapi/getJsonApiFormat", bytes.NewReader(requestBody))
+		if err != nil {
+			return testResult{localErr: err}
+		}
+		request.Header.Set("Authorization", "Bearer "+key)
+		request.Header.Set("Content-Type", "application/json")
+		client, err := service.NewProxyHttpClient(channel.GetSetting().Proxy)
+		if err != nil {
+			return testResult{localErr: err}
+		}
+		resp, err := client.Do(request)
+		if err != nil {
+			return testResult{localErr: redactRunningHubKey(err, key)}
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			return testResult{localErr: readErr}
+		}
+		if resp.StatusCode != http.StatusOK {
+			message := strings.TrimSpace(string(body))
+			if len(message) > 200 {
+				message = message[:200]
+			}
+			if message == "" {
+				message = http.StatusText(resp.StatusCode)
+			}
+			return testResult{localErr: redactRunningHubKey(fmt.Errorf("RunningHub API format check failed: status %d: %s", resp.StatusCode, message), key)}
+		}
+		if err := validateRunningHubAPIFormatResponseForMode(body, workflow.mode); err != nil {
+			return testResult{localErr: redactRunningHubKey(err, key)}
+		}
 	}
 	return testResult{}
 }

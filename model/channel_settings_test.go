@@ -101,8 +101,8 @@ func TestAdvancedCustomChannelRequiresModelListRouteOnlyWhenUpdateChecksEnabled(
 
 func TestRunningHubChannelRequiresWorkflowID(t *testing.T) {
 	channel := &Channel{Type: constant.ChannelTypeRunningHub}
-	require.ErrorContains(t, channel.ValidateSettings(), "RunningHub workflow ID cannot be empty")
+	require.ErrorContains(t, channel.ValidateSettings(), "RunningHub image-to-video workflow ID cannot be empty")
 
-	channel.SetOtherSettings(dto.ChannelOtherSettings{RunningHubWorkflowID: "wf-h3"})
+	channel.SetOtherSettings(dto.ChannelOtherSettings{RunningHubWorkflowID: "wf-image", RunningHubTextWorkflowID: "wf-text"})
 	require.NoError(t, channel.ValidateSettings())
 }

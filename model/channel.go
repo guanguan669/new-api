@@ -972,8 +972,13 @@ func (channel *Channel) ValidateSettings() error {
 			return err
 		}
 	}
-	if channel.Type == constant.ChannelTypeRunningHub && strings.TrimSpace(channelOtherSettings.RunningHubWorkflowID) == "" {
-		return fmt.Errorf("RunningHub workflow ID cannot be empty")
+	if channel.Type == constant.ChannelTypeRunningHub {
+		if strings.TrimSpace(channelOtherSettings.RunningHubWorkflowID) == "" {
+			return fmt.Errorf("RunningHub image-to-video workflow ID cannot be empty")
+		}
+		if strings.TrimSpace(channelOtherSettings.RunningHubTextWorkflowID) == "" {
+			return fmt.Errorf("RunningHub text-to-video workflow ID cannot be empty")
+		}
 	}
 	if channel.Type == constant.ChannelTypeAdvancedCustom {
 		if channelOtherSettings.AdvancedCustom == nil {

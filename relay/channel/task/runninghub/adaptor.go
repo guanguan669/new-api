@@ -32,6 +32,7 @@ const (
 	createPath        = "/task/openapi/create"
 	queryPath         = "/openapi/v2/query"
 	uploadPath        = "/openapi/v2/media/upload/binary"
+	apiFormatPath     = "/api/openapi/getJsonApiFormat"
 	defaultAspect     = "9:16 (Portrait Widescreen)"
 	defaultMegapixels = 1
 	defaultMultiple   = 32
@@ -45,9 +46,10 @@ var audioNodeIDs = []string{"628", "630", "629"}
 
 type TaskAdaptor struct {
 	taskcommon.BaseBilling
-	baseURL    string
-	workflowID string
-	proxy      string
+	baseURL         string
+	imageWorkflowID string
+	textWorkflowID  string
+	proxy           string
 }
 
 type nodeInfo struct {
@@ -129,7 +131,8 @@ type referenceInput struct {
 
 func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo) {
 	a.baseURL = strings.TrimRight(info.ChannelBaseUrl, "/")
-	a.workflowID = strings.TrimSpace(info.ChannelOtherSettings.RunningHubWorkflowID)
+	a.imageWorkflowID = strings.TrimSpace(info.ChannelOtherSettings.RunningHubWorkflowID)
+	a.textWorkflowID = strings.TrimSpace(info.ChannelOtherSettings.RunningHubTextWorkflowID)
 	a.proxy = info.ChannelSetting.Proxy
 }
 
@@ -144,16 +147,20 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 	if err != nil {
 		return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
 	}
+	workflowID, workflowMode, err := a.workflowForRequest(c, req)
+	if err != nil {
+		return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+	}
 	if err := a.validateRequestInput(c, req); err != nil {
 		return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+	}
+	if err := a.validateWorkflowOutput(info.ApiKey, workflowID, workflowMode); err != nil {
+		return service.TaskErrorWrapperLocal(err, "invalid_workflow", http.StatusBadGateway)
 	}
 	return nil
 }
 
 func (a *TaskAdaptor) validateRequestInput(c *gin.Context, req relaycommon.TaskSubmitReq) error {
-	if strings.TrimSpace(a.workflowID) == "" {
-		return fmt.Errorf("runninghub workflow id is not configured")
-	}
 	if _, err := selectorFromRequest(req); err != nil {
 		return err
 	}
@@ -171,8 +178,14 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, _ *relaycommon.RelayInfo) 
 	if err != nil {
 		return ratios
 	}
-	if qualityRatio := h3MegapixelBillingRatio(selector.Megapixels); qualityRatio != 1 {
+	qualityRatio := h3MegapixelBillingRatio(selector.Megapixels)
+	if qualityRatio != 1 {
 		ratios["megapixels"] = qualityRatio
+	}
+	if imageCount, err := referenceImageCount(c, req); err == nil {
+		if imageRatio := h3ReferenceImageBillingRatio(requestSeconds(req), qualityRatio, imageCount); imageRatio != 1 {
+			ratios["reference_images"] = imageRatio
+		}
 	}
 	return ratios
 }
@@ -309,6 +322,10 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 	}
 	if taskStatus == model.TaskStatusSuccess {
 		taskInfo.Url = selectResultURL(data)
+		if taskInfo.Url == "" {
+			taskInfo.Status = string(model.TaskStatusFailure)
+			taskInfo.Reason = "RunningHub completed without a video result; check that the workflow has only the SaveVideo final output"
+		}
 	}
 	return taskInfo, nil
 }
@@ -331,9 +348,9 @@ func (a *TaskAdaptor) ConvertToOpenAIVideo(task *model.Task) ([]byte, error) {
 }
 
 func (a *TaskAdaptor) convertRequest(c *gin.Context, req relaycommon.TaskSubmitReq, apiKey string) (*createRequest, error) {
-	workflowID := strings.TrimSpace(a.workflowID)
-	if workflowID == "" {
-		return nil, fmt.Errorf("runninghub workflow id is not configured")
+	workflowID, _, err := a.workflowForRequest(c, req)
+	if err != nil {
+		return nil, err
 	}
 	selector, err := selectorFromRequest(req)
 	if err != nil {
@@ -358,6 +375,25 @@ func (a *TaskAdaptor) convertRequest(c *gin.Context, req relaycommon.TaskSubmitR
 		nodes = append(nodes, nodeInfo{NodeID: audioNodeIDs[i], FieldName: "audio", FieldValue: audio})
 	}
 	return &createRequest{APIKey: apiKey, WorkflowID: workflowID, NodeInfoList: nodes}, nil
+}
+
+func (a *TaskAdaptor) workflowForRequest(c *gin.Context, req relaycommon.TaskSubmitReq) (string, common.RunningHubH3WorkflowMode, error) {
+	imageCount, err := referenceImageCount(c, req)
+	if err != nil {
+		return "", "", err
+	}
+	if imageCount > 0 {
+		workflowID := strings.TrimSpace(a.imageWorkflowID)
+		if workflowID == "" {
+			return "", "", fmt.Errorf("runninghub image-to-video workflow id is not configured")
+		}
+		return workflowID, common.RunningHubH3WorkflowImageToVideo, nil
+	}
+	workflowID := strings.TrimSpace(a.textWorkflowID)
+	if workflowID == "" {
+		return "", "", fmt.Errorf("runninghub text-to-video workflow id is not configured")
+	}
+	return workflowID, common.RunningHubH3WorkflowTextToVideo, nil
 }
 
 func (a *TaskAdaptor) collectReferences(c *gin.Context, req relaycommon.TaskSubmitReq, apiKey string) ([]string, []string, error) {
@@ -417,6 +453,13 @@ func referenceInputs(c *gin.Context, req relaycommon.TaskSubmitReq) ([]string, [
 	var imageFiles, audioFiles []*multipart.FileHeader
 	if c != nil && c.Request != nil && c.Request.MultipartForm != nil {
 		form := c.Request.MultipartForm
+		// The common multipart task parser retains image and images fields, but
+		// input_reference and repeated reference_* URL values are not part of
+		// TaskSubmitReq. Preserve them here before counting or uploading inputs.
+		imageValues = appendDistinctStrings(imageValues, form.Value["input_reference"]...)
+		imageValues = appendDistinctStrings(imageValues, form.Value["reference_images"]...)
+		audioValues = appendDistinctStrings(audioValues, form.Value["reference_audio"]...)
+		audioValues = appendDistinctStrings(audioValues, form.Value["reference_audios"]...)
 		imageFiles = multipartFiles(form, "input_reference", "image", "images", "reference_images")
 		audioFiles = multipartFiles(form, "reference_audio", "reference_audios")
 	}
@@ -427,6 +470,14 @@ func referenceInputs(c *gin.Context, req relaycommon.TaskSubmitReq) ([]string, [
 		return nil, nil, nil, nil, fmt.Errorf("runninghub supports at most %d reference audio files", maxAudios)
 	}
 	return imageValues, audioValues, imageFiles, audioFiles, nil
+}
+
+func referenceImageCount(c *gin.Context, req relaycommon.TaskSubmitReq) (int, error) {
+	imageValues, _, imageFiles, _, err := referenceInputs(c, req)
+	if err != nil {
+		return 0, err
+	}
+	return len(imageValues) + len(imageFiles), nil
 }
 
 func (a *TaskAdaptor) resolveReferenceValues(apiKey string, values []string) ([]string, error) {
@@ -510,6 +561,41 @@ func (a *TaskAdaptor) uploadReference(apiKey string, input referenceInput) (stri
 		return "", fmt.Errorf("runninghub upload response missing fileName")
 	}
 	return fileName, nil
+}
+
+func (a *TaskAdaptor) validateWorkflowOutput(apiKey string, workflowID string, workflowMode common.RunningHubH3WorkflowMode) error {
+	payload, err := common.Marshal(map[string]string{
+		"apiKey":     apiKey,
+		"workflowId": workflowID,
+	})
+	if err != nil {
+		return err
+	}
+
+	request, err := http.NewRequest(http.MethodPost, a.baseURL+apiFormatPath, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Authorization", "Bearer "+apiKey)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json")
+	client, err := service.GetHttpClientWithProxy(strings.TrimSpace(a.proxy))
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("RunningHub workflow check failed with status %s", resp.Status)
+	}
+	return common.ValidateRunningHubH3APIFormatForMode(body, workflowMode)
 }
 
 func isRunningHubSuccessCode(code int) bool {
@@ -682,6 +768,17 @@ func h3MegapixelBillingRatio(value any) float64 {
 		return megapixels * 1.5
 	}
 	return megapixels * 1.1
+}
+
+func h3ReferenceImageBillingRatio(seconds int, qualityRatio float64, imageCount int) float64 {
+	const includedImages = 5
+	if imageCount <= includedImages || seconds <= 0 || qualityRatio <= 0 {
+		return 1
+	}
+
+	// The base H3 price is ¥0.10 per second at quality=1. Each reference image
+	// beyond the first five adds a fixed ¥0.10, independent of duration/quality.
+	return 1 + float64(imageCount-includedImages)/(float64(seconds)*qualityRatio)
 }
 
 func h3MegapixelFloat(value any) (float64, bool) {
@@ -979,9 +1076,6 @@ func selectResultURL(data any) string {
 		if strings.Contains(lower, ".mp4") || strings.Contains(lower, ".mov") || strings.Contains(lower, ".webm") || strings.Contains(lower, "video") {
 			return candidate
 		}
-	}
-	if len(all) > 0 {
-		return all[0]
 	}
 	return ""
 }
