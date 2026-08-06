@@ -207,6 +207,34 @@ func TestEstimateBillingUsesRunningHubDuration(t *testing.T) {
 	require.Equal(t, map[string]float64{"seconds": 12}, ratios)
 }
 
+func TestEstimateBillingUsesRunningHubMegapixelRatio(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+	ctx.Set("task_request", relaycommon.TaskSubmitReq{Seconds: "6", Size: "1920x1080"})
+
+	ratios := (&TaskAdaptor{}).EstimateBilling(ctx, &relaycommon.RelayInfo{})
+	require.Equal(t, 6.0, ratios["seconds"])
+	require.Equal(t, 3.0, ratios["megapixels"])
+}
+
+func TestH3MegapixelBillingRatio(t *testing.T) {
+	tests := []struct {
+		megapixels any
+		ratio      float64
+	}{
+		{megapixels: 0.2, ratio: 0.22},
+		{megapixels: 0.98, ratio: 1.078},
+		{megapixels: 1.0, ratio: 1.0},
+		{megapixels: 1.2, ratio: 1.8},
+		{megapixels: 2.0, ratio: 3.0},
+	}
+
+	for _, tt := range tests {
+		require.InDelta(t, tt.ratio, h3MegapixelBillingRatio(tt.megapixels), 0.000001)
+	}
+}
+
 func TestValidateRequestRejectsTooManyMultipartFilesBeforeUpload(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	var form bytes.Buffer

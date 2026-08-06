@@ -166,7 +166,15 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, _ *relaycommon.RelayInfo) 
 	if err != nil {
 		return nil
 	}
-	return map[string]float64{"seconds": float64(requestSeconds(req))}
+	ratios := map[string]float64{"seconds": float64(requestSeconds(req))}
+	selector, err := selectorFromRequest(req)
+	if err != nil {
+		return ratios
+	}
+	if qualityRatio := h3MegapixelBillingRatio(selector.Megapixels); qualityRatio != 1 {
+		ratios["megapixels"] = qualityRatio
+	}
+	return ratios
 }
 
 func (a *TaskAdaptor) BuildRequestURL(_ *relaycommon.RelayInfo) (string, error) {
@@ -659,6 +667,35 @@ func h3MegapixelsFromValue(value string) (float64, error) {
 		}
 	}
 	return 0, fmt.Errorf("unsupported runninghub megapixels %q; supported values are 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.98, 1.0, 1.2, 1.5, 1.8, and 2.0", value)
+}
+
+func h3MegapixelBillingRatio(value any) float64 {
+	megapixels, ok := h3MegapixelFloat(value)
+	if !ok || math.Abs(megapixels-1) < 0.000001 {
+		return 1
+	}
+	if megapixels > 1 {
+		return megapixels * 1.5
+	}
+	return megapixels * 1.1
+}
+
+func h3MegapixelFloat(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return typed, true
+	case float32:
+		return float64(typed), true
+	case int:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	case string:
+		megapixels, err := h3MegapixelsFromValue(typed)
+		return megapixels, err == nil
+	default:
+		return 0, false
+	}
 }
 
 func normalizeAspectRatio(value string) (string, error) {
