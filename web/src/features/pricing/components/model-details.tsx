@@ -69,6 +69,7 @@ import {
 import { parseTags } from '../lib/filters'
 import { getAvailableGroups, isTokenBasedModel } from '../lib/model-helpers'
 import { formatFixedPrice, formatGroupPrice } from '../lib/price'
+import { isRunningHubH3Model } from '../lib/runninghub-h3-pricing'
 import type {
   ModelCapability,
   PriceType,
@@ -79,6 +80,7 @@ import { DynamicPricingBreakdown } from './dynamic-pricing-breakdown'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
 import { ModelDetailsApi } from './model-details-api'
 import { ModelDetailsPerformance } from './model-details-performance'
+import { RunningHubH3Pricing } from './runninghub-h3-pricing'
 
 // ----------------------------------------------------------------------------
 // Local UI helpers
@@ -1144,6 +1146,7 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
   const isDynamic =
     props.model.billing_mode === 'tiered_expr' &&
     Boolean(props.model.billing_expr)
+  const isRunningHubH3 = isRunningHubH3Model(props.model)
 
   return (
     <div className='@container/details space-y-4'>
@@ -1171,26 +1174,39 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
 
           <section className='bg-card/60 space-y-5 rounded-xl border p-4 shadow-sm'>
             <SectionTitle>{t('Pricing')}</SectionTitle>
-            <PriceSection
-              model={props.model}
-              priceRate={props.priceRate}
-              usdExchangeRate={props.usdExchangeRate}
-              tokenUnit={props.tokenUnit}
-              showRechargePrice={showRechargePrice}
-            />
-            {isDynamic && (
-              <DynamicPricingBreakdown billingExpr={props.model.billing_expr} />
+            {isRunningHubH3 ? (
+              <RunningHubH3Pricing
+                model={props.model}
+                priceRate={props.priceRate}
+                usdExchangeRate={props.usdExchangeRate}
+                showRechargePrice={showRechargePrice}
+              />
+            ) : (
+              <>
+                <PriceSection
+                  model={props.model}
+                  priceRate={props.priceRate}
+                  usdExchangeRate={props.usdExchangeRate}
+                  tokenUnit={props.tokenUnit}
+                  showRechargePrice={showRechargePrice}
+                />
+                {isDynamic && (
+                  <DynamicPricingBreakdown
+                    billingExpr={props.model.billing_expr}
+                  />
+                )}
+                <GroupPricingSection
+                  model={props.model}
+                  groupRatio={props.groupRatio}
+                  usableGroup={props.usableGroup}
+                  autoGroups={props.autoGroups}
+                  priceRate={props.priceRate}
+                  usdExchangeRate={props.usdExchangeRate}
+                  tokenUnit={props.tokenUnit}
+                  showRechargePrice={showRechargePrice}
+                />
+              </>
             )}
-            <GroupPricingSection
-              model={props.model}
-              groupRatio={props.groupRatio}
-              usableGroup={props.usableGroup}
-              autoGroups={props.autoGroups}
-              priceRate={props.priceRate}
-              usdExchangeRate={props.usdExchangeRate}
-              tokenUnit={props.tokenUnit}
-              showRechargePrice={showRechargePrice}
-            />
           </section>
 
           <ModelBackendDetailsSection model={props.model} />
