@@ -1175,12 +1175,7 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
           <section className='bg-card/60 space-y-5 rounded-xl border p-4 shadow-sm'>
             <SectionTitle>{t('Pricing')}</SectionTitle>
             {isRunningHubH3 ? (
-              <RunningHubH3Pricing
-                model={props.model}
-                priceRate={props.priceRate}
-                usdExchangeRate={props.usdExchangeRate}
-                showRechargePrice={showRechargePrice}
-              />
+              <RunningHubH3Pricing />
             ) : (
               <>
                 <PriceSection

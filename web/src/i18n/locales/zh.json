@@ -1,6 +1,7 @@
 {
   "translation": {
     "H3 video pricing": "H3 视频计费",
+    "Resolution": "分辨率",
     "Video requests are billed by requested duration and clarity. The price in the first line follows the current platform display; the second line is a CNY reference.": "视频按请求时长和清晰度计费。第一行是平台当前显示的扣费价格，第二行是人民币参考价。",
     "Current group: {{group}} ({{ratio}}x)": "当前分组：{{group}}（{{ratio}} 倍）",
     "Clarity": "清晰度",
