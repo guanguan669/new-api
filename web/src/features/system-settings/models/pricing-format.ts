@@ -16,6 +16,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { formatBillingCurrencyFromUSD } from '@/lib/currency'
+
 const DISPLAY_DECIMALS = 12
 const SNAP_DECIMALS = 8
 const SNAP_EPSILON = 1e-12
@@ -58,4 +60,15 @@ export function formatPricingNumber(value: unknown): string {
 
   const normalized = snapFloatDrift(num)
   return Number.parseFloat(normalized.toFixed(DISPLAY_DECIMALS)).toString()
+}
+
+export function formatPricingCurrencyFromUSD(value: unknown): string {
+  const price = toNumberOrNull(value)
+  if (price === null) return ''
+
+  return formatBillingCurrencyFromUSD(price, {
+    digitsLarge: 6,
+    digitsSmall: 8,
+    abbreviate: false,
+  })
 }

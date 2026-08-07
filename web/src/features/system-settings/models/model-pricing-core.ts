@@ -20,7 +20,10 @@ import * as z from 'zod'
 
 import { combineBillingExpr } from '@/features/pricing/lib/billing-expr'
 
-import { formatPricingNumber } from './pricing-format'
+import {
+  formatPricingCurrencyFromUSD,
+  formatPricingNumber,
+} from './pricing-format'
 
 export const createModelPricingSchema = (t: (key: string) => string) =>
   z.object({
@@ -235,7 +238,9 @@ export function buildPreviewRows(
       {
         key: 'price',
         label: 'ModelPrice',
-        value: values.price || t('Empty'),
+        value: values.price
+          ? formatPricingCurrencyFromUSD(values.price)
+          : t('Empty'),
       },
     ]
   }
@@ -244,14 +249,16 @@ export function buildPreviewRows(
     {
       key: 'inputPrice',
       label: t('Input price'),
-      value: promptPrice ? `$${promptPrice}` : t('Empty'),
+      value: promptPrice
+        ? formatPricingCurrencyFromUSD(promptPrice)
+        : t('Empty'),
     },
     {
       key: 'completion',
       label: t('Completion price'),
       value:
         laneEnabled.completion && lanePrices.completion
-          ? `$${lanePrices.completion}`
+          ? formatPricingCurrencyFromUSD(lanePrices.completion)
           : t('Empty'),
     },
     {
@@ -259,7 +266,7 @@ export function buildPreviewRows(
       label: t('Cache read price'),
       value:
         laneEnabled.cache && lanePrices.cache
-          ? `$${lanePrices.cache}`
+          ? formatPricingCurrencyFromUSD(lanePrices.cache)
           : t('Empty'),
     },
     {
@@ -267,7 +274,7 @@ export function buildPreviewRows(
       label: t('Cache write price'),
       value:
         laneEnabled.createCache && lanePrices.createCache
-          ? `$${lanePrices.createCache}`
+          ? formatPricingCurrencyFromUSD(lanePrices.createCache)
           : t('Empty'),
     },
     {
@@ -275,7 +282,7 @@ export function buildPreviewRows(
       label: t('Image input price'),
       value:
         laneEnabled.image && lanePrices.image
-          ? `$${lanePrices.image}`
+          ? formatPricingCurrencyFromUSD(lanePrices.image)
           : t('Empty'),
     },
     {
@@ -283,7 +290,7 @@ export function buildPreviewRows(
       label: t('Audio input price'),
       value:
         laneEnabled.audioInput && lanePrices.audioInput
-          ? `$${lanePrices.audioInput}`
+          ? formatPricingCurrencyFromUSD(lanePrices.audioInput)
           : t('Empty'),
     },
     {
@@ -291,7 +298,7 @@ export function buildPreviewRows(
       label: t('Audio output price'),
       value:
         laneEnabled.audioOutput && lanePrices.audioOutput
-          ? `$${lanePrices.audioOutput}`
+          ? formatPricingCurrencyFromUSD(lanePrices.audioOutput)
           : t('Empty'),
     },
   ]

@@ -19,7 +19,10 @@ For commercial licensing, please contact support@quantumnous.com
 import { splitBillingExprAndRequestRules } from '@/features/pricing/lib/billing-expr'
 
 import { safeJsonParse } from '../utils/json-parser'
-import { formatPricingNumber } from './pricing-format'
+import {
+  formatPricingCurrencyFromUSD,
+  formatPricingNumber,
+} from './pricing-format'
 
 export type ModelPricingSnapshotInput = {
   modelPrice: string
@@ -113,7 +116,9 @@ export const getPriceSummary = (
     return getExpressionSummary(row, t)
   }
   if (row.billingMode === 'per-request') {
-    return row.price ? `$${row.price} / ${t('request')}` : t('Unset price')
+    return row.price
+      ? `${formatPricingCurrencyFromUSD(row.price)} / ${t('request')}`
+      : t('Unset price')
   }
 
   const inputPrice = ratioToPrice(row.ratio)
@@ -129,8 +134,8 @@ export const getPriceSummary = (
   ].filter(hasPricingValue).length
 
   return extraCount > 0
-    ? `${t('Input')} $${inputPrice} · ${extraCount} ${t('extras')}`
-    : `${t('Input')} $${inputPrice}`
+    ? `${t('Input')} ${formatPricingCurrencyFromUSD(inputPrice)} · ${extraCount} ${t('extras')}`
+    : `${t('Input')} ${formatPricingCurrencyFromUSD(inputPrice)}`
 }
 
 export const getPriceDetail = (
@@ -151,11 +156,11 @@ export const getPriceDetail = (
 
   const details = [
     row.completionRatio &&
-      `${t('Output')} $${ratioToPrice(row.completionRatio, inputPrice)}`,
+      `${t('Output')} ${formatPricingCurrencyFromUSD(ratioToPrice(row.completionRatio, inputPrice))}`,
     row.cacheRatio &&
-      `${t('Cache')} $${ratioToPrice(row.cacheRatio, inputPrice)}`,
+      `${t('Cache')} ${formatPricingCurrencyFromUSD(ratioToPrice(row.cacheRatio, inputPrice))}`,
     row.createCacheRatio &&
-      `${t('Cache write')} $${ratioToPrice(row.createCacheRatio, inputPrice)}`,
+      `${t('Cache write')} ${formatPricingCurrencyFromUSD(ratioToPrice(row.createCacheRatio, inputPrice))}`,
   ]
     .filter(Boolean)
     .slice(0, 2)
