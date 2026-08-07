@@ -41,6 +41,7 @@ type runningHubH3FallbackCreateRequest struct {
 	WorkflowID   string                         `json:"workflowId"`
 	NodeInfoList []runningHubH3FallbackNodeInfo `json:"nodeInfoList"`
 	Workflow     string                         `json:"workflow"`
+	InstanceType string                         `json:"instanceType,omitempty"`
 }
 
 type runningHubH3FallbackCreateResponse struct {
@@ -281,6 +282,7 @@ func runningHubH3FallbackRequestForDuration(snapshot *model.RunningHubH3Fallback
 		WorkflowID:   snapshot.WorkflowID,
 		NodeInfoList: nodes,
 		Workflow:     string(serializedWorkflow),
+		InstanceType: snapshot.InstanceType,
 	}, nil
 }
 

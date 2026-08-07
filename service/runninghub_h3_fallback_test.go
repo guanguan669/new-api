@@ -84,6 +84,7 @@ func TestRunningHubH3FallbackRequestForDurationUpdatesNodeAndWorkflow(t *testing
 	request, err := runningHubH3FallbackRequestForDuration(snapshot, "test-key", 5)
 	require.NoError(t, err)
 	require.Equal(t, "test-key", request.APIKey)
+	require.Equal(t, "plus", request.InstanceType)
 
 	var duration any
 	for _, node := range request.NodeInfoList {
@@ -106,6 +107,7 @@ func TestStartRunningHubH3OOMFallbackSubmitsFiveSecondSegments(t *testing.T) {
 		require.Equal(t, runningHubH3FallbackCreatePath, r.URL.Path)
 		var request runningHubH3FallbackCreateRequest
 		require.NoError(t, common.DecodeJson(r.Body, &request))
+		require.Equal(t, "plus", request.InstanceType)
 		for _, node := range request.NodeInfoList {
 			if node.NodeID == "132" && node.FieldName == "value" {
 				durations = append(durations, int(node.FieldValue.(float64)))
@@ -284,8 +286,9 @@ func TestOpenRunningHubH3FallbackResultOnlyAllowsDeterministicLocalFile(t *testi
 
 func testRunningHubH3FallbackRequest(duration int) *model.RunningHubH3FallbackRequest {
 	return &model.RunningHubH3FallbackRequest{
-		WorkflowID: "workflow-test",
-		Duration:   duration,
+		WorkflowID:   "workflow-test",
+		InstanceType: "plus",
+		Duration:     duration,
 		NodeInfoList: []model.RunningHubH3FallbackNode{
 			{NodeID: "138", FieldName: "value", FieldValue: "a dancer"},
 			{NodeID: "132", FieldName: "value", FieldValue: duration},

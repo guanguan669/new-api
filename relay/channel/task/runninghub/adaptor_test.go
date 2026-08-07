@@ -244,6 +244,7 @@ func TestConvertRequestBuildsH3NodesAndEnforcesLimits(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "secret-key", body.APIKey)
 	require.Equal(t, "wf-image", body.WorkflowID)
+	require.Empty(t, body.InstanceType)
 	require.Contains(t, body.NodeInfoList, nodeInfo{NodeID: "138", FieldName: "value", FieldValue: "make a video"})
 	require.Contains(t, body.NodeInfoList, nodeInfo{NodeID: "132", FieldName: "value", FieldValue: 6})
 	require.Contains(t, body.NodeInfoList, nodeInfo{NodeID: "115", FieldName: "aspect_ratio", FieldValue: "9:16 (Portrait Widescreen)"})
@@ -271,6 +272,42 @@ func TestConvertRequestBuildsH3NodesAndEnforcesLimits(t *testing.T) {
 
 	_, err = adaptor.convertRequest(ctx, relaycommon.TaskSubmitReq{Prompt: "x", Metadata: map[string]any{"reference_video": "video.mp4"}}, "secret-key")
 	require.ErrorContains(t, err, "reference video")
+}
+
+func TestConvertRequestUsesPlusInstanceFor1080P(t *testing.T) {
+	adaptor := &TaskAdaptor{baseURL: "https://runninghub.example", textWorkflowID: "wf-text"}
+
+	requests := []relaycommon.TaskSubmitReq{
+		{Prompt: "make a 1080p video", Size: "1920x1080"},
+		{Prompt: "make a 1080p video", Metadata: map[string]any{"resolution": "1080P"}},
+		{Prompt: "make a 1080p video", Metadata: map[string]any{"clarity": "1080P"}},
+		{Prompt: "make a 1080p video", Metadata: map[string]any{"megapixels": "2"}},
+	}
+	for _, req := range requests {
+		body, err := adaptor.convertRequest(&gin.Context{}, req, "secret-key")
+		require.NoError(t, err)
+		require.Equal(t, plusInstanceType, body.InstanceType)
+
+		payload, err := common.Marshal(body)
+		require.NoError(t, err)
+		var serialized map[string]any
+		require.NoError(t, common.Unmarshal(payload, &serialized))
+		require.Equal(t, plusInstanceType, serialized["instanceType"])
+	}
+
+	body, err := adaptor.convertRequest(&gin.Context{}, relaycommon.TaskSubmitReq{
+		Prompt: "make a 720p video",
+		Size:   "1280x720",
+	}, "secret-key")
+	require.NoError(t, err)
+	require.Empty(t, body.InstanceType)
+
+	payload, err := common.Marshal(body)
+	require.NoError(t, err)
+	var serialized map[string]any
+	require.NoError(t, common.Unmarshal(payload, &serialized))
+	_, exists := serialized["instanceType"]
+	require.False(t, exists)
 }
 
 func TestConvertRequestUsesTextWorkflowWithoutReferenceImages(t *testing.T) {
@@ -558,7 +595,7 @@ func TestMultipartUploadBuildRequestBody(t *testing.T) {
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", &form)
 	ctx.Request.Header.Set("Content-Type", writer.FormDataContentType())
 	require.NoError(t, ctx.Request.ParseMultipartForm(1<<20))
-	ctx.Set("task_request", relaycommon.TaskSubmitReq{Prompt: "hello"})
+	ctx.Set("task_request", relaycommon.TaskSubmitReq{Prompt: "hello", Size: "1920x1080"})
 	workflow := map[string]any{
 		"138": map[string]any{"inputs": map[string]any{"value": ""}},
 		"132": map[string]any{"inputs": map[string]any{"value": 5}},
@@ -588,7 +625,12 @@ func TestMultipartUploadBuildRequestBody(t *testing.T) {
 	var body createRequest
 	require.NoError(t, json.Unmarshal(payload, &body))
 	require.Equal(t, "wf-image", body.WorkflowID)
+	require.Equal(t, plusInstanceType, body.InstanceType)
 	require.Contains(t, body.NodeInfoList, nodeInfo{NodeID: "137", FieldName: "image", FieldValue: "rh-uploaded.png"})
+	fallbackState := adaptor.GetFallbackState()
+	require.NotNil(t, fallbackState)
+	require.NotNil(t, fallbackState.Request)
+	require.Equal(t, plusInstanceType, fallbackState.Request.InstanceType)
 	var submittedWorkflow map[string]any
 	require.NoError(t, json.Unmarshal([]byte(body.Workflow), &submittedWorkflow))
 	require.Contains(t, submittedWorkflow, "92")

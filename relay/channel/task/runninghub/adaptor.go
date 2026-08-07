@@ -37,6 +37,8 @@ const (
 	defaultAspect              = "9:16 (Portrait Widescreen)"
 	defaultMegapixels          = 1
 	defaultMultiple            = 32
+	plusInstanceType           = "plus"
+	plusInstanceMegapixels     = 2.0
 	maxImages                  = 9
 	maxAudios                  = 3
 	maxAspectRatioGap          = 0.06
@@ -76,6 +78,7 @@ type createRequest struct {
 	WorkflowID   string     `json:"workflowId,omitempty"`
 	NodeInfoList []nodeInfo `json:"nodeInfoList,omitempty"`
 	Workflow     string     `json:"workflow,omitempty"`
+	InstanceType string     `json:"instanceType,omitempty"`
 }
 
 type createResponse struct {
@@ -413,6 +416,12 @@ func (a *TaskAdaptor) convertRequest(c *gin.Context, req relaycommon.TaskSubmitR
 	for i, audio := range audios {
 		nodes = append(nodes, nodeInfo{NodeID: audioNodeIDs[i], FieldName: "audio", FieldValue: audio})
 	}
+	request := &createRequest{
+		APIKey:       apiKey,
+		WorkflowID:   workflowID,
+		NodeInfoList: nodes,
+		InstanceType: h3InstanceTypeForSelector(selector),
+	}
 	if workflow := preparedWorkflowFromContext(c); workflow != nil {
 		for _, node := range nodes {
 			if err := setRunningHubWorkflowNodeValue(workflow, node); err != nil {
@@ -426,14 +435,9 @@ func (a *TaskAdaptor) convertRequest(c *gin.Context, req relaycommon.TaskSubmitR
 		// RunningHub validates workflowId before honoring workflow. Keep the
 		// normal selector fields for that API contract; workflow remains the
 		// execution source and contains SaveVideo 92 as the only final output.
-		return &createRequest{
-			APIKey:       apiKey,
-			WorkflowID:   workflowID,
-			NodeInfoList: nodes,
-			Workflow:     string(serializedWorkflow),
-		}, nil
+		request.Workflow = string(serializedWorkflow)
 	}
-	return &createRequest{APIKey: apiKey, WorkflowID: workflowID, NodeInfoList: nodes}, nil
+	return request, nil
 }
 
 func fallbackStateFromCreateRequest(request *createRequest, duration int) *model.RunningHubH3FallbackState {
@@ -454,6 +458,7 @@ func fallbackStateFromCreateRequest(request *createRequest, duration int) *model
 			WorkflowID:   request.WorkflowID,
 			NodeInfoList: nodes,
 			Workflow:     request.Workflow,
+			InstanceType: request.InstanceType,
 			Duration:     duration,
 		},
 	}
@@ -893,6 +898,16 @@ func h3MegapixelBillingRatio(value any) float64 {
 		return megapixels * 1.5
 	}
 	return megapixels * 1.1
+}
+
+// RunningHub requires the plus instance for H3's 1080P / 2.0 megapixel tier.
+// Lower H3 tiers use the default instance and omit the selector entirely.
+func h3InstanceTypeForSelector(selector h3Selector) string {
+	megapixels, ok := h3MegapixelFloat(selector.Megapixels)
+	if ok && math.Abs(megapixels-plusInstanceMegapixels) < 0.000001 {
+		return plusInstanceType
+	}
+	return ""
 }
 
 func h3ReferenceImageBillingRatio(seconds int, qualityRatio float64, imageCount int) float64 {

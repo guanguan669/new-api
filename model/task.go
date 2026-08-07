@@ -141,6 +141,7 @@ type RunningHubH3FallbackRequest struct {
 	WorkflowID   string                     `json:"workflow_id"`
 	NodeInfoList []RunningHubH3FallbackNode `json:"node_info_list"`
 	Workflow     string                     `json:"workflow"`
+	InstanceType string                     `json:"instance_type,omitempty"`
 	Duration     int                        `json:"duration"`
 }
 
