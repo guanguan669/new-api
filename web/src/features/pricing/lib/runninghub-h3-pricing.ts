@@ -29,7 +29,7 @@ export type RunningHubH3DisplayPrice = {
 
 export const RUNNING_HUB_H3_DISPLAY_PRICES: RunningHubH3DisplayPrice[] = [
   { resolution: '768P', price: '0.10 元/秒' },
-  { resolution: '2K', price: '0.30 元/秒' },
+  { resolution: '2K', price: '0.3 元/秒' },
 ]
 
 export type RunningHubH3ClarityPreset = {
