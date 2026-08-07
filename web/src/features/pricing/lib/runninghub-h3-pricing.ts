@@ -22,6 +22,15 @@ import type { PricingModel } from '../types'
 
 export const RUNNING_HUB_H3_MODEL_NAME = 'minimax_h3'
 export const RUNNING_HUB_H3_GROUP = 'minimaxh3'
+export type RunningHubH3DisplayPrice = {
+  resolution: string
+  price: string
+}
+
+export const RUNNING_HUB_H3_DISPLAY_PRICES: RunningHubH3DisplayPrice[] = [
+  { resolution: '768P', price: '0.10 元/秒' },
+  { resolution: '2K', price: '0.30 元/秒' },
+]
 
 export type RunningHubH3ClarityPreset = {
   megapixels: number

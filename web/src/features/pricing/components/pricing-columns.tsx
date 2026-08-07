@@ -41,8 +41,8 @@ import {
   stripTrailingZeros,
 } from '../lib/price'
 import {
-  formatRunningHubH3Price,
   isRunningHubH3Model,
+  RUNNING_HUB_H3_DISPLAY_PRICES,
 } from '../lib/runninghub-h3-pricing'
 import type { PricingModel, TokenUnit } from '../types'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
@@ -181,21 +181,16 @@ export function usePricingColumns(
         const isTokenBased = isTokenBasedModel(model)
 
         if (isRunningHubH3Model(model)) {
-          const price = stripTrailingZeros(
-            formatRunningHubH3Price(model, 1, 0.2, {
-              showRechargePrice,
-              priceRate,
-              usdExchangeRate,
-              selectedGroup,
-            })
-          )
-
           return (
-            <div className='max-w-full min-w-0'>
-              <span className='font-mono text-sm tabular-nums'>{price}</span>
-              <div className='text-muted-foreground/50 text-[10px]'>
-                {t('From')} / {t('seconds')}
-              </div>
+            <div className='max-w-full min-w-0 space-y-0.5'>
+              {RUNNING_HUB_H3_DISPLAY_PRICES.map((entry) => (
+                <div
+                  className='font-mono text-sm tabular-nums'
+                  key={entry.resolution}
+                >
+                  {entry.resolution} {entry.price}
+                </div>
+              ))}
             </div>
           )
         }

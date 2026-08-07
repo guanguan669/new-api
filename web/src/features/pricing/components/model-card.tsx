@@ -33,8 +33,8 @@ import { parseTags } from '../lib/filters'
 import { isTokenBasedModel } from '../lib/model-helpers'
 import { formatPrice, formatRequestPrice } from '../lib/price'
 import {
-  formatRunningHubH3Price,
   isRunningHubH3Model,
+  RUNNING_HUB_H3_DISPLAY_PRICES,
 } from '../lib/runninghub-h3-pricing'
 import type { PricingModel, TokenUnit } from '../types'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
@@ -182,17 +182,15 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
     )
   } else if (isRunningHubH3Model(props.model)) {
     priceSummary = (
-      <span className='text-muted-foreground whitespace-nowrap'>
-        {t('From')}{' '}
-        <span className='text-foreground font-mono font-semibold'>
-          {formatRunningHubH3Price(props.model, 1, 0.2, {
-            showRechargePrice,
-            priceRate,
-            usdExchangeRate,
-            selectedGroup: props.selectedGroup,
-          })}
-        </span>{' '}
-        / {t('seconds')}
+      <span className='text-muted-foreground flex flex-wrap gap-x-2 gap-y-0.5'>
+        {RUNNING_HUB_H3_DISPLAY_PRICES.map((entry) => (
+          <span
+            className='text-foreground font-mono font-semibold'
+            key={entry.resolution}
+          >
+            {entry.resolution} {entry.price}
+          </span>
+        ))}
       </span>
     )
   } else {
