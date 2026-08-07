@@ -85,6 +85,7 @@ type GroupRatioVisualEditorProps = {
   autoGroups: string
   maxTokenAutoGroupsField: ReactNode
   groupSpecialUsableGroup: string
+  runningHubH3GroupPrice: string
   onChange: (field: string, value: string) => void
 }
 
@@ -100,6 +101,11 @@ type GroupPricingRow = {
 type RegistryEntry = {
   name: string
   ratio: number
+}
+
+type RunningHubH3GroupPrice = {
+  price_768p: number
+  price_2k: number
 }
 
 const sectionCardClassName =
@@ -138,6 +144,36 @@ function parseNestedRatioMap(
     fallback: {},
     silent: true,
   })
+}
+
+function parseRunningHubH3GroupPriceMap(
+  value: string
+): Record<string, RunningHubH3GroupPrice> {
+  const parsed = safeJsonParse<Record<string, Partial<RunningHubH3GroupPrice>>>(
+    value,
+    {
+      fallback: {},
+      silent: true,
+    }
+  )
+  const map: Record<string, RunningHubH3GroupPrice> = {}
+
+  for (const [group, price] of Object.entries(parsed)) {
+    const price768p = Number(price?.price_768p)
+    const price2k = Number(price?.price_2k)
+    map[group] = {
+      price_768p: Number.isFinite(price768p) ? price768p : 0,
+      price_2k: Number.isFinite(price2k) ? price2k : 0,
+    }
+  }
+
+  return map
+}
+
+function serializeRunningHubH3GroupPriceMap(
+  map: Record<string, RunningHubH3GroupPrice>
+): string {
+  return JSON.stringify(map, null, 2)
 }
 
 function buildGroupPricingRows(
@@ -267,6 +303,7 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
   autoGroups,
   maxTokenAutoGroupsField,
   groupSpecialUsableGroup,
+  runningHubH3GroupPrice,
   onChange,
 }: GroupRatioVisualEditorProps) {
   const { t } = useTranslation()
@@ -340,6 +377,12 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
         topupGroupRatio={topupGroupRatio}
         onChange={onChange}
         onShowDetail={setDetailGroup}
+      />
+
+      <RunningHubH3GroupPriceEditor
+        groupRatio={groupRatio}
+        value={runningHubH3GroupPrice}
+        onChange={onChange}
       />
 
       <GroupOverrideRules
@@ -671,6 +714,238 @@ function GroupPricingTable({
               {t('Duplicate group names: {{names}}', {
                 names: duplicateNames.join(', '),
               })}
+            </p>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+type RunningHubH3GroupPriceEditorProps = {
+  groupRatio: string
+  value: string
+  onChange: (field: string, value: string) => void
+}
+
+function RunningHubH3GroupPriceEditor({
+  groupRatio,
+  value,
+  onChange,
+}: RunningHubH3GroupPriceEditorProps) {
+  const { t } = useTranslation()
+  const [selectedGroup, setSelectedGroup] = useState<string | null>(null)
+
+  const priceMap = useMemo(() => parseRunningHubH3GroupPriceMap(value), [value])
+  const eligibleGroups = useMemo(() => {
+    const ratioMap = parseRatioMap(groupRatio)
+    return Object.keys(ratioMap).filter((group) => group !== 'auto')
+  }, [groupRatio])
+  const eligibleGroupSet = useMemo(
+    () => new Set(eligibleGroups),
+    [eligibleGroups]
+  )
+  const rows = useMemo(
+    () =>
+      Object.entries(priceMap).map(([group, price]) => ({
+        group,
+        ...price,
+        eligible: eligibleGroupSet.has(group),
+      })),
+    [eligibleGroupSet, priceMap]
+  )
+  const candidates = useMemo(
+    () => eligibleGroups.filter((group) => !Object.hasOwn(priceMap, group)),
+    [eligibleGroups, priceMap]
+  )
+  const invalidRows = rows.filter(
+    (row) =>
+      row.price_768p < 0 ||
+      row.price_2k < 0 ||
+      !Number.isFinite(row.price_768p) ||
+      !Number.isFinite(row.price_2k)
+  )
+  const staleRows = rows.filter((row) => !row.eligible)
+
+  const emitMap = useCallback(
+    (nextMap: Record<string, RunningHubH3GroupPrice>) => {
+      onChange(
+        'RunningHubH3GroupPrice',
+        serializeRunningHubH3GroupPriceMap(nextMap)
+      )
+    },
+    [onChange]
+  )
+
+  const addGroup = useCallback(() => {
+    if (!selectedGroup) return
+    emitMap({
+      ...priceMap,
+      [selectedGroup]: { price_768p: 0.1, price_2k: 0.3 },
+    })
+    setSelectedGroup(null)
+  }, [emitMap, priceMap, selectedGroup])
+
+  const updatePrice = useCallback(
+    (group: string, field: keyof RunningHubH3GroupPrice, price: number) => {
+      emitMap({
+        ...priceMap,
+        [group]: {
+          ...priceMap[group],
+          [field]: price,
+        },
+      })
+    },
+    [emitMap, priceMap]
+  )
+
+  const removeGroup = useCallback(
+    (group: string) => {
+      const nextMap = { ...priceMap }
+      delete nextMap[group]
+      emitMap(nextMap)
+    },
+    [emitMap, priceMap]
+  )
+
+  return (
+    <Card className={sectionCardClassName}>
+      <CardHeader className={sectionHeaderClassName}>
+        <div className='flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between'>
+          <div>
+            <CardTitle>{t('H3 group prices')}</CardTitle>
+            <CardDescription>
+              {t(
+                'Optional CNY per second prices for H3. Prices apply only to existing non-auto pricing groups.'
+              )}
+            </CardDescription>
+          </div>
+          <div className='flex flex-wrap gap-2 sm:justify-end'>
+            <GroupNameSelect
+              options={candidates}
+              value={selectedGroup}
+              placeholder={t('Choose eligible group')}
+              onValueChange={setSelectedGroup}
+              className='w-52'
+            />
+            <Button
+              type='button'
+              size='sm'
+              onClick={addGroup}
+              disabled={!selectedGroup}
+            >
+              <Plus className='mr-2 h-4 w-4' />
+              {t('Add H3 price')}
+            </Button>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className='space-y-3'>
+          <StaticDataTable
+            data={rows}
+            getRowKey={(row) => row.group}
+            emptyClassName='text-muted-foreground h-20 text-sm'
+            emptyContent={t('No H3 group prices configured.')}
+            columns={[
+              {
+                id: 'group',
+                header: t('Group'),
+                className: 'min-w-40',
+                cell: (row) => (
+                  <div className='flex items-center gap-2'>
+                    <span className='font-medium'>{row.group}</span>
+                    {!row.eligible && <UnknownGroupBadge />}
+                  </div>
+                ),
+              },
+              {
+                id: 'price-768p',
+                header: t('768P / 1MP (CNY/sec)'),
+                className: 'w-44',
+                cell: (row) => (
+                  <Input
+                    type='number'
+                    min={0}
+                    step={0.01}
+                    value={row.price_768p}
+                    aria-label={t('768P / 1MP (CNY/sec): {{group}}', {
+                      group: row.group,
+                    })}
+                    aria-invalid={row.price_768p < 0}
+                    onChange={(event) =>
+                      updatePrice(
+                        row.group,
+                        'price_768p',
+                        Number(event.target.value)
+                      )
+                    }
+                  />
+                ),
+              },
+              {
+                id: 'price-2k',
+                header: t('2K / 2MP (CNY/sec)'),
+                className: 'w-44',
+                cell: (row) => (
+                  <Input
+                    type='number'
+                    min={0}
+                    step={0.01}
+                    value={row.price_2k}
+                    aria-label={t('2K / 2MP (CNY/sec): {{group}}', {
+                      group: row.group,
+                    })}
+                    aria-invalid={row.price_2k < 0}
+                    onChange={(event) =>
+                      updatePrice(
+                        row.group,
+                        'price_2k',
+                        Number(event.target.value)
+                      )
+                    }
+                  />
+                ),
+              },
+              {
+                id: 'actions',
+                header: t('Actions'),
+                className: 'text-right',
+                cellClassName: 'text-right',
+                cell: (row) => (
+                  <Button
+                    variant='ghost'
+                    size='sm'
+                    onClick={() => removeGroup(row.group)}
+                    aria-label={t('Remove H3 price')}
+                  >
+                    <Trash2 className='h-4 w-4' />
+                  </Button>
+                ),
+              },
+            ]}
+          />
+
+          {eligibleGroups.length === 0 && (
+            <p className='text-muted-foreground text-sm'>
+              {t('Add at least one non-auto pricing group first.')}
+            </p>
+          )}
+          {invalidRows.length > 0 && (
+            <p className='text-destructive text-sm'>
+              {t(
+                'H3 group prices must be zero or greater. Use 0 for free H3 generation.'
+              )}
+            </p>
+          )}
+          {staleRows.length > 0 && (
+            <p className='text-destructive text-sm'>
+              {t(
+                'Remove H3 price profiles for groups that are missing from group ratios or are auto: {{groups}}',
+                {
+                  groups: staleRows.map((row) => row.group).join(', '),
+                }
+              )}
             </p>
           )}
         </div>

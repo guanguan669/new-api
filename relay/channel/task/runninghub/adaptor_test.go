@@ -16,8 +16,10 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -406,6 +408,35 @@ func TestH3MegapixelBillingRatio(t *testing.T) {
 	}
 }
 
+func TestH3CustomBillingRateCNYCoversDocumentedMegapixelPresets(t *testing.T) {
+	tests := []struct {
+		megapixels float64
+		wantRate   float64
+	}{
+		{megapixels: 0.2, wantRate: 0.044},
+		{megapixels: 0.3, wantRate: 0.066},
+		{megapixels: 0.4, wantRate: 0.088},
+		{megapixels: 0.5, wantRate: 0.110},
+		{megapixels: 0.6, wantRate: 0.132},
+		{megapixels: 0.7, wantRate: 0.154},
+		{megapixels: 0.8, wantRate: 0.176},
+		{megapixels: 0.9, wantRate: 0.198},
+		{megapixels: 0.98, wantRate: 0.2156},
+		{megapixels: 1.0, wantRate: 0.200},
+		{megapixels: 1.2, wantRate: 0.540},
+		{megapixels: 1.5, wantRate: 0.675},
+		{megapixels: 1.8, wantRate: 0.810},
+		{megapixels: 2.0, wantRate: 0.900},
+	}
+
+	for _, tt := range tests {
+		t.Run(strconv.FormatFloat(tt.megapixels, 'f', -1, 64), func(t *testing.T) {
+			rate, err := h3CustomBillingRateCNY(0.20, 0.90, tt.megapixels)
+			require.NoError(t, err)
+			assert.InDelta(t, tt.wantRate, rate, 0.000001)
+		})
+	}
+}
 func TestEstimateBillingIncludesOnlyReferenceImagesBeyondFive(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -448,6 +479,120 @@ func TestEstimateBillingIncludesOnlyReferenceImagesBeyondFive(t *testing.T) {
 			require.InDelta(t, tt.wantRatio, ratios["reference_images"], 0.000001)
 		})
 	}
+}
+
+func TestOverridePriceDataUsesH3GroupPrice768PAnchor(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	withRunningHubH3GroupPrice(t, "h3-vip", h3GroupPrice{Price768P: 0.20, Price2K: 0.60})
+	withUSDExchangeRate(t, 7.3)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+	ctx.Set("task_request", relaycommon.TaskSubmitReq{Seconds: "10", Size: "1344x768"})
+
+	priceData, ok, err := (&TaskAdaptor{}).OverridePriceData(ctx, &relaycommon.RelayInfo{OriginModelName: modelName, UsingGroup: "h3-vip"})
+
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, 1.0, priceData.GroupRatioInfo.GroupRatio)
+	assert.InDelta(t, (0.20*1.078)/7.3, priceData.ModelPrice, 0.000001)
+	assert.InDelta(t, 10.0, priceData.OtherRatios()["seconds"], 0.000001)
+	assert.NotContains(t, priceData.OtherRatios(), "megapixels")
+	assert.Equal(t, expectedH3Quota(t, 0.20*1.078*10/7.3), priceData.Quota)
+}
+
+func TestOverridePriceDataUsesH3GroupPrice2KAnchorAndFixedImageFee(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	withRunningHubH3GroupPrice(t, "h3-plus", h3GroupPrice{Price768P: 0.20, Price2K: 0.90})
+	withUSDExchangeRate(t, 7.3)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+	ctx.Set("task_request", relaycommon.TaskSubmitReq{Seconds: "5", Size: "1920x1080", Images: []string{"1", "2", "3", "4", "5", "6", "7"}})
+
+	priceData, ok, err := (&TaskAdaptor{}).OverridePriceData(ctx, &relaycommon.RelayInfo{OriginModelName: modelName, UsingGroup: "h3-plus"})
+
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.InDelta(t, (0.90+0.20/5)/7.3, priceData.ModelPrice, 0.000001)
+	assert.InDelta(t, 5.0, priceData.OtherRatios()["seconds"], 0.000001)
+	assert.NotContains(t, priceData.OtherRatios(), "megapixels")
+	assert.NotContains(t, priceData.OtherRatios(), "reference_images")
+	assert.Equal(t, expectedH3Quota(t, (0.90*5+0.20)/7.3), priceData.Quota)
+}
+
+func TestOverridePriceDataBillsExtraImageWhenBaseTierIsFree(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	withRunningHubH3GroupPrice(t, "free-base", h3GroupPrice{Price768P: 0, Price2K: 0})
+	withUSDExchangeRate(t, 7.3)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+	ctx.Set("task_request", relaycommon.TaskSubmitReq{Seconds: "5", Images: []string{"1", "2", "3", "4", "5", "6"}})
+
+	priceData, ok, err := (&TaskAdaptor{}).OverridePriceData(ctx, &relaycommon.RelayInfo{OriginModelName: modelName, UsingGroup: "free-base"})
+
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.False(t, priceData.FreeModel)
+	assert.InDelta(t, (0.10/5)/7.3, priceData.ModelPrice, 0.000001)
+	assert.Equal(t, map[string]float64{"seconds": 5}, priceData.OtherRatios())
+	assert.Equal(t, expectedH3Quota(t, 0.10/7.3), priceData.Quota)
+}
+
+func TestOverridePriceDataDoesNotApplyNormalGroupMultiplier(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	withRunningHubH3GroupPrice(t, "vip", h3GroupPrice{Price768P: 0.10, Price2K: 0.30})
+	withUSDExchangeRate(t, 7.3)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+	ctx.Set("task_request", relaycommon.TaskSubmitReq{Seconds: "5"})
+
+	priceData, ok, err := (&TaskAdaptor{}).OverridePriceData(ctx, &relaycommon.RelayInfo{OriginModelName: modelName, UsingGroup: "vip"})
+
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, 1.0, priceData.GroupRatioInfo.GroupRatio)
+	assert.Equal(t, expectedH3Quota(t, (0.10*5)/7.3), priceData.Quota)
+}
+
+func TestOverridePriceDataFallsBackWhenGroupUnconfiguredOrModelDiffers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	withRunningHubH3GroupPrice(t, "h3-vip", h3GroupPrice{Price768P: 0.10, Price2K: 0.30})
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+	ctx.Set("task_request", relaycommon.TaskSubmitReq{Seconds: "5"})
+
+	_, ok, err := (&TaskAdaptor{}).OverridePriceData(ctx, &relaycommon.RelayInfo{OriginModelName: modelName, UsingGroup: "default"})
+	require.NoError(t, err)
+	assert.False(t, ok)
+
+	_, ok, err = (&TaskAdaptor{}).OverridePriceData(ctx, &relaycommon.RelayInfo{OriginModelName: "other", UsingGroup: "h3-vip"})
+	require.NoError(t, err)
+	assert.False(t, ok)
+}
+
+func withRunningHubH3GroupPrice(t *testing.T, configuredGroup string, price h3GroupPrice) {
+	t.Helper()
+	original := lookupRunningHubH3GroupPrice
+	lookupRunningHubH3GroupPrice = func(group string) (h3GroupPrice, bool) {
+		if group != configuredGroup {
+			return h3GroupPrice{}, false
+		}
+		return price, true
+	}
+	t.Cleanup(func() { lookupRunningHubH3GroupPrice = original })
+}
+
+func withUSDExchangeRate(t *testing.T, rate float64) {
+	t.Helper()
+	original := operation_setting.USDExchangeRate
+	operation_setting.USDExchangeRate = rate
+	t.Cleanup(func() { operation_setting.USDExchangeRate = original })
+}
+
+func expectedH3Quota(t *testing.T, usd float64) int {
+	t.Helper()
+	quota, err := common.QuotaFromFloatStrict(usd * common.QuotaPerUnit)
+	require.NoError(t, err)
+	return quota
 }
 
 func TestValidateRequestRejectsTooManyMultipartFilesBeforeUpload(t *testing.T) {

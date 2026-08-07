@@ -146,6 +146,7 @@ func InitOptionMap() {
 	common.OptionMap["CreateCacheRatio"] = ratio_setting.CreateCacheRatio2JSONString()
 	common.OptionMap["GroupRatio"] = ratio_setting.GroupRatio2JSONString()
 	common.OptionMap["GroupGroupRatio"] = ratio_setting.GroupGroupRatio2JSONString()
+	common.OptionMap[ratio_setting.RunningHubH3GroupPriceOptionKey] = ratio_setting.RunningHubH3GroupPrice2JSONString()
 	common.OptionMap["UserUsableGroups"] = setting.UserUsableGroups2JSONString()
 	common.OptionMap["CompletionRatio"] = ratio_setting.CompletionRatio2JSONString()
 	common.OptionMap["ImageRatio"] = ratio_setting.ImageRatio2JSONString()
@@ -189,11 +190,31 @@ func InitOptionMap() {
 
 func loadOptionsFromDatabase() {
 	options, _ := AllOption()
+	loadOptionValues(options)
+}
+
+func loadOptionValues(options []*Option) {
 	for _, option := range options {
-		err := updateOptionMap(option.Key, option.Value)
-		if err != nil {
-			common.SysLog("failed to update option map: " + err.Error())
+		if isGroupRatioOptionKey(option.Key) {
+			applyLoadedOption(option)
 		}
+	}
+	for _, option := range options {
+		if isGroupRatioOptionKey(option.Key) {
+			continue
+		}
+		applyLoadedOption(option)
+	}
+}
+
+func applyLoadedOption(option *Option) {
+	if err := validateLoadedOptionValue(option.Key, option.Value); err != nil {
+		common.SysLog("failed to validate option: " + err.Error())
+		return
+	}
+	err := updateOptionMap(option.Key, option.Value)
+	if err != nil {
+		common.SysLog("failed to update option map: " + err.Error())
 	}
 }
 
@@ -205,14 +226,32 @@ func SyncOptions(frequency int) {
 	}
 }
 
+func validateLoadedOptionValue(key string, value string) error {
+	if isRunningHubH3GroupPriceOptionKey(key) {
+		return ratio_setting.ValidateRunningHubH3GroupPriceJSON(value)
+	}
+	return nil
+}
+
 func validateOptionValue(key string, value string) error {
 	if key == operation_setting.ToolPriceOptionKey {
 		return operation_setting.ValidateToolPricesJSON(value)
+	}
+	if isRunningHubH3GroupPriceOptionKey(key) {
+		return ratio_setting.ValidateRunningHubH3GroupPriceJSON(value)
 	}
 	if key == "MaxTokenAutoGroups" {
 		return setting.ValidateMaxTokenAutoGroups(value)
 	}
 	return nil
+}
+
+func isGroupRatioOptionKey(key string) bool {
+	return key == "GroupRatio" || key == "group_ratio_setting.group_ratio"
+}
+
+func isRunningHubH3GroupPriceOptionKey(key string) bool {
+	return key == ratio_setting.RunningHubH3GroupPriceOptionKey || key == "group_ratio_setting.runninghub_h3_group_price"
 }
 
 func UpdateOption(key string, value string) error {
@@ -557,6 +596,8 @@ func updateOptionMap(key string, value string) (err error) {
 		err = ratio_setting.UpdateGroupRatioByJSONString(value)
 	case "GroupGroupRatio":
 		err = ratio_setting.UpdateGroupGroupRatioByJSONString(value)
+	case ratio_setting.RunningHubH3GroupPriceOptionKey:
+		err = ratio_setting.UpdateRunningHubH3GroupPriceByJSONString(value)
 	case "UserUsableGroups":
 		err = setting.UpdateUserUsableGroupsByJSONString(value)
 	case "CompletionRatio":

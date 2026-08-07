@@ -27,10 +27,15 @@ var groupGroupRatioMap = types.NewRWMap[string, map[string]float64]()
 
 var defaultGroupSpecialUsableGroup = map[string]map[string]string{}
 
+var defaultRunningHubH3GroupPrice = map[string]RunningHubH3GroupPrice{}
+
+var runningHubH3GroupPriceMap = types.NewRWMap[string, RunningHubH3GroupPrice]()
+
 type GroupRatioSetting struct {
-	GroupRatio              *types.RWMap[string, float64]            `json:"group_ratio"`
-	GroupGroupRatio         *types.RWMap[string, map[string]float64] `json:"group_group_ratio"`
-	GroupSpecialUsableGroup *types.RWMap[string, map[string]string]  `json:"group_special_usable_group"`
+	GroupRatio              *types.RWMap[string, float64]                `json:"group_ratio"`
+	GroupGroupRatio         *types.RWMap[string, map[string]float64]     `json:"group_group_ratio"`
+	GroupSpecialUsableGroup *types.RWMap[string, map[string]string]      `json:"group_special_usable_group"`
+	RunningHubH3GroupPrice  *types.RWMap[string, RunningHubH3GroupPrice] `json:"runninghub_h3_group_price"`
 }
 
 var groupRatioSetting GroupRatioSetting
@@ -41,11 +46,13 @@ func init() {
 
 	groupRatioMap.AddAll(defaultGroupRatio)
 	groupGroupRatioMap.AddAll(defaultGroupGroupRatio)
+	runningHubH3GroupPriceMap.AddAll(defaultRunningHubH3GroupPrice)
 
 	groupRatioSetting = GroupRatioSetting{
 		GroupSpecialUsableGroup: groupSpecialUsableGroup,
 		GroupRatio:              groupRatioMap,
 		GroupGroupRatio:         groupGroupRatioMap,
+		RunningHubH3GroupPrice:  runningHubH3GroupPriceMap,
 	}
 
 	config.GlobalConfig.Register("group_ratio_setting", &groupRatioSetting)
@@ -55,6 +62,9 @@ func GetGroupRatioSetting() *GroupRatioSetting {
 	if groupRatioSetting.GroupSpecialUsableGroup == nil {
 		groupRatioSetting.GroupSpecialUsableGroup = types.NewRWMap[string, map[string]string]()
 		groupRatioSetting.GroupSpecialUsableGroup.AddAll(defaultGroupSpecialUsableGroup)
+	}
+	if groupRatioSetting.RunningHubH3GroupPrice == nil {
+		groupRatioSetting.RunningHubH3GroupPrice = runningHubH3GroupPriceMap
 	}
 	return &groupRatioSetting
 }

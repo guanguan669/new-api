@@ -33,6 +33,24 @@ func filterPricingByUsableGroups(pricing []model.Pricing, usableGroup map[string
 	return filtered
 }
 
+func filterRunningHubH3GroupPricesByUsableGroups(usableGroup map[string]string) map[string]ratio_setting.RunningHubH3GroupPrice {
+	if len(usableGroup) == 0 {
+		return map[string]ratio_setting.RunningHubH3GroupPrice{}
+	}
+	configuredPrices := ratio_setting.GetRunningHubH3GroupPriceCopy()
+	if len(configuredPrices) == 0 {
+		return map[string]ratio_setting.RunningHubH3GroupPrice{}
+	}
+
+	prices := make(map[string]ratio_setting.RunningHubH3GroupPrice, len(configuredPrices))
+	for group, price := range configuredPrices {
+		if _, ok := usableGroup[group]; ok {
+			prices[group] = price
+		}
+	}
+	return prices
+}
+
 func GetPricing(c *gin.Context) {
 	pricing := model.GetPricing()
 	userId, exists := c.Get("id")
@@ -65,14 +83,15 @@ func GetPricing(c *gin.Context) {
 	}
 
 	c.JSON(200, gin.H{
-		"success":            true,
-		"data":               pricing,
-		"vendors":            model.GetVendors(),
-		"group_ratio":        groupRatio,
-		"usable_group":       usableGroup,
-		"supported_endpoint": model.GetSupportedEndpointMap(),
-		"auto_groups":        service.GetUserAutoGroup(group),
-		"pricing_version":    "a42d372ccf0b5dd13ecf71203521f9d2",
+		"success":                    true,
+		"data":                       pricing,
+		"vendors":                    model.GetVendors(),
+		"group_ratio":                groupRatio,
+		"usable_group":               usableGroup,
+		"supported_endpoint":         model.GetSupportedEndpointMap(),
+		"auto_groups":                service.GetUserAutoGroup(group),
+		"runninghub_h3_group_prices": filterRunningHubH3GroupPricesByUsableGroups(usableGroup),
+		"pricing_version":            "a42d372ccf0b5dd13ecf71203521f9d2",
 	})
 }
 

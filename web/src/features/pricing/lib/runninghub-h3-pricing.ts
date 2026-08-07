@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { formatBillingCurrencyFromUSD } from '@/lib/currency'
 
-import type { PricingModel } from '../types'
+import type { PricingModel, RunningHubH3GroupPrice } from '../types'
 
 export const RUNNING_HUB_H3_MODEL_NAME = 'minimax_h3'
 export const RUNNING_HUB_H3_GROUP = 'minimaxh3'
@@ -27,10 +27,22 @@ export type RunningHubH3DisplayPrice = {
   price: string
 }
 
-export const RUNNING_HUB_H3_DISPLAY_PRICES: RunningHubH3DisplayPrice[] = [
-  { resolution: '768P', price: '0.10 元/秒' },
-  { resolution: '2K', price: '0.3 元/秒' },
+type RunningHubH3DisplayPricePreset = {
+  resolution: string
+  priceKey: keyof RunningHubH3GroupPrice
+  fallbackPrice: string
+}
+
+const RUNNING_HUB_H3_DISPLAY_PRICE_PRESETS: RunningHubH3DisplayPricePreset[] = [
+  { resolution: '768P', priceKey: 'price_768p', fallbackPrice: '0.10 元/秒' },
+  { resolution: '2K', priceKey: 'price_2k', fallbackPrice: '0.30 元/秒' },
 ]
+
+export const RUNNING_HUB_H3_DISPLAY_PRICES: RunningHubH3DisplayPrice[] =
+  RUNNING_HUB_H3_DISPLAY_PRICE_PRESETS.map(({ resolution, fallbackPrice }) => ({
+    resolution,
+    price: fallbackPrice,
+  }))
 
 export type RunningHubH3ClarityPreset = {
   megapixels: number
@@ -56,6 +68,33 @@ export const RUNNING_HUB_H3_CLARITY_PRESETS: RunningHubH3ClarityPreset[] = [
 
 export function isRunningHubH3Model(model: Pick<PricingModel, 'model_name'>) {
   return model.model_name === RUNNING_HUB_H3_MODEL_NAME
+}
+
+function formatCnyPerSecond(price: number): string {
+  return `${price.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 4,
+  })} 元/秒`
+}
+
+export function getRunningHubH3DisplayPrices(
+  model: PricingModel,
+  groupPrices?: Record<string, RunningHubH3GroupPrice>,
+  selectedGroup?: string
+): RunningHubH3DisplayPrice[] {
+  const group = runningHubH3EffectiveGroup(model, selectedGroup)
+  const customPrice = groupPrices?.[group]
+
+  return RUNNING_HUB_H3_DISPLAY_PRICE_PRESETS.map((preset) => {
+    const price = customPrice?.[preset.priceKey]
+    return {
+      resolution: preset.resolution,
+      price:
+        typeof price === 'number' && Number.isFinite(price)
+          ? formatCnyPerSecond(price)
+          : preset.fallbackPrice,
+    }
+  })
 }
 
 export function runningHubH3ClarityMultiplier(megapixels: number): number {

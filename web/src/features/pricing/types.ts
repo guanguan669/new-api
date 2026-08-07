@@ -88,6 +88,11 @@ export type ModelCapability =
   | 'caching'
   | 'embeddings'
 
+export type RunningHubH3GroupPrice = {
+  price_768p: number
+  price_2k: number
+}
+
 export type PricingData = {
   success: boolean
   message?: string
@@ -97,6 +102,7 @@ export type PricingData = {
   usable_group: Record<string, { desc: string; ratio: number }>
   supported_endpoint: Record<string, string>
   auto_groups: string[]
+  runninghub_h3_group_prices?: Record<string, RunningHubH3GroupPrice>
 }
 
 export type TokenUnit = 'M' | 'K'

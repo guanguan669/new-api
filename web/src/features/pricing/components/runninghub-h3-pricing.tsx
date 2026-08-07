@@ -20,10 +20,22 @@ import { useTranslation } from 'react-i18next'
 
 import { StaticDataTable } from '@/components/data-table'
 
-import { RUNNING_HUB_H3_DISPLAY_PRICES } from '../lib/runninghub-h3-pricing'
+import { getRunningHubH3DisplayPrices } from '../lib/runninghub-h3-pricing'
+import type { PricingModel, RunningHubH3GroupPrice } from '../types'
 
-export function RunningHubH3Pricing() {
+type RunningHubH3PricingProps = {
+  model: PricingModel
+  groupPrices?: Record<string, RunningHubH3GroupPrice>
+  selectedGroup?: string
+}
+
+export function RunningHubH3Pricing(props: RunningHubH3PricingProps) {
   const { t } = useTranslation()
+  const prices = getRunningHubH3DisplayPrices(
+    props.model,
+    props.groupPrices,
+    props.selectedGroup
+  )
 
   return (
     <div className='overflow-x-auto border-y'>
@@ -31,7 +43,7 @@ export function RunningHubH3Pricing() {
         className='min-w-[300px] rounded-none border-0'
         tableClassName='text-sm'
         headerRowClassName='hover:bg-transparent'
-        data={RUNNING_HUB_H3_DISPLAY_PRICES}
+        data={prices}
         getRowKey={(row) => row.resolution}
         columns={[
           {

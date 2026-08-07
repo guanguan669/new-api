@@ -41,10 +41,10 @@ import {
   stripTrailingZeros,
 } from '../lib/price'
 import {
+  getRunningHubH3DisplayPrices,
   isRunningHubH3Model,
-  RUNNING_HUB_H3_DISPLAY_PRICES,
 } from '../lib/runninghub-h3-pricing'
-import type { PricingModel, TokenUnit } from '../types'
+import type { PricingModel, RunningHubH3GroupPrice, TokenUnit } from '../types'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
 
 // ----------------------------------------------------------------------------
@@ -57,6 +57,7 @@ export interface PricingColumnsOptions {
   usdExchangeRate?: number
   showRechargePrice?: boolean
   selectedGroup?: string
+  runningHubH3GroupPrices?: Record<string, RunningHubH3GroupPrice>
 }
 
 export function usePricingColumns(
@@ -69,6 +70,7 @@ export function usePricingColumns(
     usdExchangeRate = 1,
     showRechargePrice = false,
     selectedGroup,
+    runningHubH3GroupPrices,
   } = options
 
   const tokenUnitLabel = tokenUnit === 'K' ? '1K' : '1M'
@@ -183,7 +185,11 @@ export function usePricingColumns(
         if (isRunningHubH3Model(model)) {
           return (
             <div className='max-w-full min-w-0 space-y-0.5'>
-              {RUNNING_HUB_H3_DISPLAY_PRICES.map((entry) => (
+              {getRunningHubH3DisplayPrices(
+                model,
+                runningHubH3GroupPrices,
+                selectedGroup
+              ).map((entry) => (
                 <div
                   className='font-mono text-sm tabular-nums'
                   key={entry.resolution}

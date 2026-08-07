@@ -74,6 +74,7 @@ import type {
   ModelCapability,
   PriceType,
   PricingModel,
+  RunningHubH3GroupPrice,
   TokenUnit,
 } from '../types'
 import { DynamicPricingBreakdown } from './dynamic-pricing-breakdown'
@@ -856,6 +857,8 @@ function GroupPricingSection(props: {
   groupRatio: Record<string, number>
   usableGroup: Record<string, { desc: string; ratio: number }>
   autoGroups: string[]
+  selectedGroup?: string
+  runningHubH3GroupPrices?: Record<string, RunningHubH3GroupPrice>
   priceRate: number
   usdExchangeRate: number
   tokenUnit: TokenUnit
@@ -1133,6 +1136,8 @@ export interface ModelDetailsContentProps {
   usableGroup: Record<string, { desc: string; ratio: number }>
   endpointMap: Record<string, { path?: string; method?: string }>
   autoGroups: string[]
+  selectedGroup?: string
+  runningHubH3GroupPrices?: Record<string, RunningHubH3GroupPrice>
   priceRate: number
   usdExchangeRate: number
   tokenUnit: TokenUnit
@@ -1175,7 +1180,11 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
           <section className='bg-card/60 space-y-5 rounded-xl border p-4 shadow-sm'>
             <SectionTitle>{t('Pricing')}</SectionTitle>
             {isRunningHubH3 ? (
-              <RunningHubH3Pricing />
+              <RunningHubH3Pricing
+                model={props.model}
+                groupPrices={props.runningHubH3GroupPrices}
+                selectedGroup={props.selectedGroup}
+              />
             ) : (
               <>
                 <PriceSection

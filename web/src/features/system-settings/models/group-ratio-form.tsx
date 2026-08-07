@@ -69,6 +69,7 @@ type GroupFormValues = {
   TopupGroupRatio: string
   UserUsableGroups: string
   GroupGroupRatio: string
+  RunningHubH3GroupPrice: string
   AutoGroups: string
   MaxTokenAutoGroups: number
   DefaultUseAutoGroup: boolean
@@ -171,6 +172,7 @@ export const GroupRatioForm = memo(function GroupRatioForm({
               topupGroupRatio={form.watch('TopupGroupRatio')}
               userUsableGroups={form.watch('UserUsableGroups')}
               groupGroupRatio={form.watch('GroupGroupRatio')}
+              runningHubH3GroupPrice={form.watch('RunningHubH3GroupPrice')}
               autoGroups={form.watch('AutoGroups')}
               maxTokenAutoGroupsField={
                 <FormField
@@ -338,6 +340,33 @@ export const GroupRatioForm = memo(function GroupRatioForm({
                     {t(
                       'to override billing when a user in one group uses a token of another group.'
                     )}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name='RunningHubH3GroupPrice'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('H3 group prices')}</FormLabel>
+                  <FormControl>
+                    <JsonCodeEditor
+                      value={field.value}
+                      onChange={field.onChange}
+                      name={field.name}
+                      onBlur={field.onBlur}
+                      textareaRef={field.ref}
+                      heightClassName='h-40 min-h-40 max-h-40'
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      'JSON map of group to H3 CNY per second prices, such as'
+                    )}{' '}
+                    {`{ "vip": { "price_768p": 0.1, "price_2k": 0.3 } }`}.
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

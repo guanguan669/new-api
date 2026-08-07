@@ -69,6 +69,7 @@ export function usePricingData() {
     usableGroup: data?.usable_group ?? {},
     endpointMap: data?.supported_endpoint ?? {},
     autoGroups: data?.auto_groups ?? [],
+    runningHubH3GroupPrices: data?.runninghub_h3_group_prices ?? {},
     isLoading,
     error,
     refetch,

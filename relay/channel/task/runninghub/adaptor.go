@@ -20,8 +20,12 @@ import (
 	"github.com/QuantumNous/new-api/relay/channel"
 	taskcommon "github.com/QuantumNous/new-api/relay/channel/task/taskcommon"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relay/helper"
 	openaidto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	hosttypes "github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/pkg/errors"
 )
@@ -57,6 +61,19 @@ var h3SupportedAspectLabels = []string{
 
 var imageNodeIDs = []string{"137", "618", "617", "619", "627", "626", "625", "624", "623"}
 var audioNodeIDs = []string{"628", "630", "629"}
+
+type h3GroupPrice struct {
+	Price768P float64
+	Price2K   float64
+}
+
+var lookupRunningHubH3GroupPrice = func(group string) (h3GroupPrice, bool) {
+	price, ok := ratio_setting.GetRunningHubH3GroupPrice(group)
+	if !ok {
+		return h3GroupPrice{}, false
+	}
+	return h3GroupPrice{Price768P: price.Price768P, Price2K: price.Price2K}, true
+}
 
 type TaskAdaptor struct {
 	taskcommon.BaseBilling
@@ -211,6 +228,64 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, _ *relaycommon.RelayInfo) 
 		}
 	}
 	return ratios
+}
+
+func (a *TaskAdaptor) OverridePriceData(c *gin.Context, info *relaycommon.RelayInfo) (hosttypes.PriceData, bool, error) {
+	if info == nil || info.OriginModelName != modelName {
+		return hosttypes.PriceData{}, false, nil
+	}
+
+	helper.HandleGroupRatio(c, info)
+	groupPrice, ok := lookupRunningHubH3GroupPrice(info.UsingGroup)
+	if !ok {
+		return hosttypes.PriceData{}, false, nil
+	}
+
+	req, err := relaycommon.GetTaskRequest(c)
+	if err != nil {
+		return hosttypes.PriceData{}, true, err
+	}
+	selector, err := selectorFromRequest(req)
+	if err != nil {
+		return hosttypes.PriceData{}, true, err
+	}
+
+	seconds := requestSeconds(req)
+	megapixels, ok := h3MegapixelFloat(selector.Megapixels)
+	if !ok {
+		return hosttypes.PriceData{}, true, fmt.Errorf("unsupported runninghub megapixels %v", selector.Megapixels)
+	}
+	rateCNY, err := h3CustomBillingRateCNY(groupPrice.Price768P, groupPrice.Price2K, megapixels)
+	if err != nil {
+		return hosttypes.PriceData{}, true, err
+	}
+	imageCount, err := referenceImageCount(c, req)
+	if err != nil {
+		return hosttypes.PriceData{}, true, err
+	}
+	if imageCount > 5 {
+		rateCNY += float64(imageCount-5) * 0.10 / float64(seconds)
+	}
+	if rateCNY < 0 {
+		return hosttypes.PriceData{}, true, fmt.Errorf("runninghub h3 group price must be non-negative")
+	}
+
+	priceData := hosttypes.PriceData{
+		FreeModel:  rateCNY == 0,
+		ModelPrice: rateCNY / usdExchangeRate(),
+		UsePrice:   true,
+		GroupRatioInfo: hosttypes.GroupRatioInfo{
+			GroupRatio: 1,
+		},
+	}
+	priceData.AddOtherRatio("seconds", float64(seconds))
+
+	quota, err := common.QuotaFromFloatStrict(priceData.ApplyOtherRatiosToFloat(priceData.ModelPrice * common.QuotaPerUnit))
+	if err != nil {
+		return hosttypes.PriceData{}, true, err
+	}
+	priceData.Quota = quota
+	return priceData, true, nil
 }
 
 func (a *TaskAdaptor) BuildRequestURL(_ *relaycommon.RelayInfo) (string, error) {
@@ -876,6 +951,27 @@ func h3ReferenceImageBillingRatio(seconds int, qualityRatio float64, imageCount 
 	// The base H3 price is ¥0.10 per second at quality=1. Each reference image
 	// beyond the first five adds a fixed ¥0.10, independent of duration/quality.
 	return 1 + float64(imageCount-includedImages)/(float64(seconds)*qualityRatio)
+}
+
+func h3CustomBillingRateCNY(price768P float64, price2K float64, megapixels float64) (float64, error) {
+	qualityRatio := h3MegapixelBillingRatio(megapixels)
+	if megapixels > 1 {
+		if price2K < 0 {
+			return 0, fmt.Errorf("runninghub h3 group price must be non-negative")
+		}
+		return price2K * (qualityRatio / 3), nil
+	}
+	if price768P < 0 {
+		return 0, fmt.Errorf("runninghub h3 group price must be non-negative")
+	}
+	return price768P * qualityRatio, nil
+}
+
+func usdExchangeRate() float64 {
+	if operation_setting.USDExchangeRate > 0 {
+		return operation_setting.USDExchangeRate
+	}
+	return ratio_setting.USD2RMB
 }
 
 func h3MegapixelFloat(value any) (float64, bool) {

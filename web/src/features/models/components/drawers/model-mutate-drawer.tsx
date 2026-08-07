@@ -318,6 +318,7 @@ export function ModelMutateDrawer({
       GroupRatio: '',
       UserUsableGroups: '',
       GroupGroupRatio: '',
+      RunningHubH3GroupPrice: '{}',
       AutoGroups: '',
       MaxTokenAutoGroups: 5,
       DefaultUseAutoGroup: false,
