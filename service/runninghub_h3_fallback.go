@@ -80,7 +80,8 @@ func runningHubH3ResponseHasCode(responseBody []byte, expected int) bool {
 		switch typed := value.(type) {
 		case map[string]any:
 			for key, item := range typed {
-				if strings.EqualFold(key, "code") && runningHubH3ValueIsCode(item, expected) {
+				normalizedKey := strings.ToLower(strings.ReplaceAll(key, "_", ""))
+				if (normalizedKey == "code" || normalizedKey == "errorcode") && runningHubH3ValueIsCode(item, expected) {
 					return true
 				}
 				if visit(item) {

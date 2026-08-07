@@ -73,6 +73,7 @@ func TestRunningHubH3FallbackDurations(t *testing.T) {
 func TestIsRunningHubH3OOMResponseRequiresCodeAndMemorySignature(t *testing.T) {
 	oom := []byte(`{"code":805,"data":{"status":"FAILED","failedReason":{"exception_type":"torch.OutOfMemoryError"}}}`)
 	assert.True(t, isRunningHubH3OOMResponse(oom, &relaycommon.TaskInfo{Code: 805, Status: string(model.TaskStatusFailure)}))
+	assert.True(t, isRunningHubH3OOMResponse([]byte(`{"errorCode":"805","failedReason":{"exception_type":"torch.OutOfMemoryError"}}`), &relaycommon.TaskInfo{Status: string(model.TaskStatusFailure)}))
 
 	assert.False(t, isRunningHubH3OOMResponse([]byte(`{"code":805,"data":{"status":"FAILED","message":"invalid input"}}`), &relaycommon.TaskInfo{Code: 805}))
 	assert.False(t, isRunningHubH3OOMResponse([]byte(`{"code":500,"data":{"status":"FAILED","message":"out of memory"}}`), &relaycommon.TaskInfo{Code: 500}))
