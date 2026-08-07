@@ -104,6 +104,10 @@ type TaskPrivateData struct {
 	Key            string `json:"key,omitempty"`
 	UpstreamTaskID string `json:"upstream_task_id,omitempty"` // 上游真实 task ID
 	ResultURL      string `json:"result_url,omitempty"`       // 任务成功后的结果 URL（视频地址等）
+	// RunningHubH3Fallback retains the normalized H3 execution request so an
+	// upstream CUDA OOM can be retried as short video segments without exposing
+	// extra tasks or charging the downstream user twice.
+	RunningHubH3Fallback *RunningHubH3FallbackState `json:"runninghub_h3_fallback,omitempty"`
 	// 计费上下文：用于异步退款/差额结算（轮询阶段读取）
 	BillingSource  string              `json:"billing_source,omitempty"`  // "wallet" 或 "subscription"
 	SubscriptionId int                 `json:"subscription_id,omitempty"` // 订阅 ID，用于订阅退款
@@ -120,6 +124,43 @@ type TaskBillingContext struct {
 	OtherRatios     map[string]float64 `json:"other_ratios,omitempty"`      // 附加倍率（时长、分辨率等）
 	OriginModelName string             `json:"origin_model_name,omitempty"` // 模型名称，必须为OriginModelName
 	PerCallBilling  bool               `json:"per_call_billing,omitempty"`  // 按次计费：跳过轮询阶段的差额结算
+}
+
+// RunningHubH3FallbackNode mirrors a RunningHub nodeInfoList item. It lives
+// in private task data because it may contain uploaded media file names and a
+// serialized workflow that are not part of the public task contract.
+type RunningHubH3FallbackNode struct {
+	NodeID     string `json:"node_id"`
+	FieldName  string `json:"field_name"`
+	FieldValue any    `json:"field_value"`
+}
+
+// RunningHubH3FallbackRequest is the normalized, upload-complete request used
+// to recreate short H3 segments after a confirmed upstream CUDA OOM.
+type RunningHubH3FallbackRequest struct {
+	WorkflowID   string                     `json:"workflow_id"`
+	NodeInfoList []RunningHubH3FallbackNode `json:"node_info_list"`
+	Workflow     string                     `json:"workflow"`
+	Duration     int                        `json:"duration"`
+}
+
+type RunningHubH3FallbackSegment struct {
+	Duration       int        `json:"duration"`
+	UpstreamTaskID string     `json:"upstream_task_id,omitempty"`
+	Status         TaskStatus `json:"status,omitempty"`
+	Progress       string     `json:"progress,omitempty"`
+	ResultURL      string     `json:"result_url,omitempty"`
+	FailReason     string     `json:"fail_reason,omitempty"`
+}
+
+// RunningHubH3FallbackState is persisted inside TaskPrivateData. State is
+// empty before any fallback; "running" means segments are being polled, and
+// "completed" has a server-local concatenated result ready for /content.
+type RunningHubH3FallbackState struct {
+	Request    *RunningHubH3FallbackRequest  `json:"request,omitempty"`
+	State      string                        `json:"state,omitempty"`
+	Segments   []RunningHubH3FallbackSegment `json:"segments,omitempty"`
+	ResultFile string                        `json:"result_file,omitempty"`
 }
 
 // GetUpstreamTaskID 获取上游真实 task ID（用于与 provider 通信）
@@ -179,7 +220,8 @@ func InitTask(platform constant.TaskPlatform, relayInfo *commonRelay.RelayInfo) 
 	privateData := TaskPrivateData{}
 	if relayInfo != nil && relayInfo.ChannelMeta != nil {
 		if relayInfo.ChannelMeta.ChannelType == constant.ChannelTypeGemini ||
-			relayInfo.ChannelMeta.ChannelType == constant.ChannelTypeVertexAi {
+			relayInfo.ChannelMeta.ChannelType == constant.ChannelTypeVertexAi ||
+			relayInfo.ChannelMeta.ChannelType == constant.ChannelTypeRunningHub {
 			privateData.Key = relayInfo.ChannelMeta.ApiKey
 		}
 		if relayInfo.UpstreamModelName != "" {
@@ -370,13 +412,14 @@ func (Task *Task) Insert() error {
 }
 
 type taskSnapshot struct {
-	Status     TaskStatus
-	Progress   string
-	StartTime  int64
-	FinishTime int64
-	FailReason string
-	ResultURL  string
-	Data       json.RawMessage
+	Status      TaskStatus
+	Progress    string
+	StartTime   int64
+	FinishTime  int64
+	FailReason  string
+	ResultURL   string
+	PrivateData json.RawMessage
+	Data        json.RawMessage
 }
 
 func (s taskSnapshot) Equal(other taskSnapshot) bool {
@@ -386,6 +429,7 @@ func (s taskSnapshot) Equal(other taskSnapshot) bool {
 		s.FinishTime == other.FinishTime &&
 		s.FailReason == other.FailReason &&
 		s.ResultURL == other.ResultURL &&
+		bytes.Equal(s.PrivateData, other.PrivateData) &&
 		bytes.Equal(s.Data, other.Data)
 }
 
@@ -397,7 +441,11 @@ func (t *Task) Snapshot() taskSnapshot {
 		FinishTime: t.FinishTime,
 		FailReason: t.FailReason,
 		ResultURL:  t.PrivateData.ResultURL,
-		Data:       t.Data,
+		PrivateData: func() json.RawMessage {
+			data, _ := common.Marshal(t.PrivateData)
+			return json.RawMessage(data)
+		}(),
+		Data: t.Data,
 	}
 }
 
