@@ -246,7 +246,7 @@ export function RunningHubH3Pricing(props: RunningHubH3PricingProps) {
       <ul className='text-muted-foreground space-y-1 text-xs leading-relaxed'>
         <li>
           {t(
-            'The first five reference images are included; each image from the sixth through ninth adds the listed one-time fee.'
+            'The first five reference images are included. The table shows the total surcharge for the selected reference-image count; each image from the sixth through ninth adds one base-rate fee.'
           )}
         </li>
         <li>

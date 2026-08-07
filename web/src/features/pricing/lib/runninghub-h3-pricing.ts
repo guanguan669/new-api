@@ -1,4 +1,3 @@
-import type { PricingModel } from '../types'
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -17,7 +16,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { formatFixedPrice } from './price'
+import { formatBillingCurrencyFromUSD } from '@/lib/currency'
+
+import type { PricingModel } from '../types'
 
 export const RUNNING_HUB_H3_MODEL_NAME = 'minimax_h3'
 export const RUNNING_HUB_H3_GROUP = 'minimaxh3'
@@ -57,9 +58,25 @@ export function runningHubH3EffectiveGroup(
   model: PricingModel,
   selectedGroup?: string
 ): string {
-  if (selectedGroup && model.enable_groups.includes(selectedGroup)) {
+  const enabledGroups = Array.isArray(model.enable_groups)
+    ? model.enable_groups
+    : []
+
+  if (selectedGroup && enabledGroups.includes(selectedGroup)) {
     return selectedGroup
   }
+
+  if (enabledGroups.includes(RUNNING_HUB_H3_GROUP)) {
+    return RUNNING_HUB_H3_GROUP
+  }
+
+  const configuredGroup = enabledGroups.find((group) =>
+    Number.isFinite(Number(model.group_ratio?.[group]))
+  )
+  if (configuredGroup) return configuredGroup
+
+  if (enabledGroups.length > 0) return enabledGroups[0]
+
   return RUNNING_HUB_H3_GROUP
 }
 
@@ -104,17 +121,17 @@ export function formatRunningHubH3Price(
   } = {}
 ): string {
   const group = runningHubH3EffectiveGroup(model, options.selectedGroup)
-  const priceModel: PricingModel = {
-    ...model,
-    model_price: runningHubH3BasePriceInUSD(model, seconds, megapixels),
+  const priceRate = options.priceRate ?? 1
+  const usdExchangeRate = options.usdExchangeRate ?? 1
+  let priceInUSD = runningHubH3PriceInUSD(model, seconds, megapixels, group)
+
+  if (options.showRechargePrice) {
+    priceInUSD = (priceInUSD * priceRate) / usdExchangeRate
   }
 
-  return formatFixedPrice(
-    priceModel,
-    group,
-    options.showRechargePrice,
-    options.priceRate,
-    options.usdExchangeRate,
-    model.group_ratio ?? {}
-  )
+  return formatBillingCurrencyFromUSD(priceInUSD, {
+    digitsLarge: 4,
+    digitsSmall: 4,
+    abbreviate: false,
+  })
 }
