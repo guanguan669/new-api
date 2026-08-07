@@ -27,15 +27,7 @@ type TaskSubmitResult struct {
 	TaskData       []byte
 	Platform       constant.TaskPlatform
 	Quota          int
-	FallbackState  *model.RunningHubH3FallbackState
 	//PerCallPrice   types.PriceData
-}
-
-// taskFallbackStateProvider is optional because only providers that can safely
-// recreate their accepted upstream request should opt into asynchronous
-// fallback behavior.
-type taskFallbackStateProvider interface {
-	GetFallbackState() *model.RunningHubH3FallbackState
 }
 
 // ResolveOriginTask 处理基于已有任务的提交（remix / continuation）：
@@ -259,17 +251,11 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		}
 	}
 
-	var fallbackState *model.RunningHubH3FallbackState
-	if provider, ok := adaptor.(taskFallbackStateProvider); ok {
-		fallbackState = provider.GetFallbackState()
-	}
-
 	return &TaskSubmitResult{
 		UpstreamTaskID: upstreamTaskID,
 		TaskData:       taskData,
 		Platform:       platform,
 		Quota:          finalQuota,
-		FallbackState:  fallbackState,
 	}, nil
 }
 

@@ -627,10 +627,6 @@ func TestMultipartUploadBuildRequestBody(t *testing.T) {
 	require.Equal(t, "wf-image", body.WorkflowID)
 	require.Equal(t, plusInstanceType, body.InstanceType)
 	require.Contains(t, body.NodeInfoList, nodeInfo{NodeID: "137", FieldName: "image", FieldValue: "rh-uploaded.png"})
-	fallbackState := adaptor.GetFallbackState()
-	require.NotNil(t, fallbackState)
-	require.NotNil(t, fallbackState.Request)
-	require.Equal(t, plusInstanceType, fallbackState.Request.InstanceType)
 	var submittedWorkflow map[string]any
 	require.NoError(t, json.Unmarshal([]byte(body.Workflow), &submittedWorkflow))
 	require.Contains(t, submittedWorkflow, "92")

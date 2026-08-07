@@ -54,19 +54,6 @@ func VideoProxy(c *gin.Context) {
 			fmt.Sprintf("Task is not completed yet, current status: %s", task.Status))
 		return
 	}
-	if fallback := task.PrivateData.RunningHubH3Fallback; fallback != nil && fallback.ResultFile != "" {
-		file, info, openErr := service.OpenRunningHubH3FallbackResult(task.TaskID, fallback.ResultFile)
-		if openErr != nil {
-			logger.LogError(c.Request.Context(), fmt.Sprintf("Failed to open local RunningHub H3 result for task %s: %s", taskID, openErr.Error()))
-			videoProxyError(c, http.StatusBadGateway, "server_error", "Failed to fetch video content")
-			return
-		}
-		defer file.Close()
-		c.Writer.Header().Set("Cache-Control", "public, max-age=86400")
-		http.ServeContent(c.Writer, c.Request, info.Name(), info.ModTime(), file)
-		return
-	}
-
 	channel, err := model.CacheGetChannel(task.ChannelId)
 	if err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Failed to get channel for task %s: %s", taskID, err.Error()))

@@ -462,54 +462,40 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	snap := task.Snapshot()
 	var taskResult *relaycommon.TaskInfo
 	var responseBody []byte
-	handledFallback := false
-	if ch.Type == constant.ChannelTypeRunningHub {
-		fallbackResult, handled, fallbackErr := advanceRunningHubH3OOMFallback(ctx, adaptor, baseURL, key, proxy, task)
-		if fallbackErr != nil {
-			return fmt.Errorf("advance RunningHub H3 OOM fallback for task %s: %w", taskId, fallbackErr)
-		}
-		if handled {
-			taskResult = fallbackResult
-			handledFallback = true
-		}
+	resp, err := adaptor.FetchTask(baseURL, key, map[string]any{
+		"task_id": task.GetUpstreamTaskID(),
+		"action":  task.Action,
+	}, proxy)
+	if err != nil {
+		return fmt.Errorf("fetchTask failed for task %s: %w", taskId, err)
+	}
+	responseBody, err = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return fmt.Errorf("readAll failed for task %s: %w", taskId, err)
 	}
 
-	if !handledFallback {
-		resp, err := adaptor.FetchTask(baseURL, key, map[string]any{
-			"task_id": task.GetUpstreamTaskID(),
-			"action":  task.Action,
-		}, proxy)
-		if err != nil {
-			return fmt.Errorf("fetchTask failed for task %s: %w", taskId, err)
-		}
-		responseBody, err = io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			return fmt.Errorf("readAll failed for task %s: %w", taskId, err)
-		}
+	logger.LogDebug(ctx, "updateVideoSingleTask response: %s", responseBody)
 
-		logger.LogDebug(ctx, "updateVideoSingleTask response: %s", responseBody)
-
-		taskResult = &relaycommon.TaskInfo{}
-		// try parse as New API response format
-		var responseItems taskdto.TaskResponse[model.Task]
-		if parseErr := common.Unmarshal(responseBody, &responseItems); parseErr == nil && responseItems.IsSuccess() {
-			logger.LogDebug(ctx, "updateVideoSingleTask parsed as new api response format: %+v", responseItems)
-			t := responseItems.Data
-			taskResult.TaskID = t.TaskID
-			taskResult.Status = string(t.Status)
-			taskResult.Url = t.GetResultURL()
-			taskResult.Progress = t.Progress
-			taskResult.Reason = t.FailReason
-			task.Data = t.Data
-		} else if parsed, parseErr := adaptor.ParseTaskResult(responseBody); parseErr != nil {
-			return fmt.Errorf("parseTaskResult failed for task %s: %w", taskId, parseErr)
-		} else {
-			taskResult = parsed
-		}
-
-		task.Data = redactVideoResponseBody(responseBody)
+	taskResult = &relaycommon.TaskInfo{}
+	// try parse as New API response format
+	var responseItems taskdto.TaskResponse[model.Task]
+	if parseErr := common.Unmarshal(responseBody, &responseItems); parseErr == nil && responseItems.IsSuccess() {
+		logger.LogDebug(ctx, "updateVideoSingleTask parsed as new api response format: %+v", responseItems)
+		t := responseItems.Data
+		taskResult.TaskID = t.TaskID
+		taskResult.Status = string(t.Status)
+		taskResult.Url = t.GetResultURL()
+		taskResult.Progress = t.Progress
+		taskResult.Reason = t.FailReason
+		task.Data = t.Data
+	} else if parsed, parseErr := adaptor.ParseTaskResult(responseBody); parseErr != nil {
+		return fmt.Errorf("parseTaskResult failed for task %s: %w", taskId, parseErr)
+	} else {
+		taskResult = parsed
 	}
+
+	task.Data = redactVideoResponseBody(responseBody)
 
 	logger.LogDebug(ctx, "updateVideoSingleTask taskResult: %+v", taskResult)
 
@@ -535,16 +521,6 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 			}
 		}
 	}
-	if ch.Type == constant.ChannelTypeRunningHub && taskResult.Status == string(model.TaskStatusFailure) && isRunningHubH3OOMResponse(responseBody, taskResult) {
-		fallbackResult, started, fallbackErr := startRunningHubH3OOMFallback(ctx, baseURL, key, proxy, task)
-		if fallbackErr != nil {
-			return fmt.Errorf("start RunningHub H3 OOM fallback for task %s: %w", taskId, fallbackErr)
-		}
-		if started {
-			taskResult = fallbackResult
-		}
-	}
-
 	shouldRefund := false
 	shouldSettle := false
 	quota := task.Quota

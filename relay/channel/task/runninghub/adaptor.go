@@ -64,7 +64,6 @@ type TaskAdaptor struct {
 	imageWorkflowID string
 	textWorkflowID  string
 	proxy           string
-	fallbackState   *model.RunningHubH3FallbackState
 }
 
 type nodeInfo struct {
@@ -226,7 +225,6 @@ func (a *TaskAdaptor) BuildRequestHeader(_ *gin.Context, req *http.Request, info
 }
 
 func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayInfo) (io.Reader, error) {
-	a.fallbackState = nil
 	req, err := relaycommon.GetTaskRequest(c)
 	if err != nil {
 		return nil, err
@@ -235,7 +233,6 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 	if err != nil {
 		return nil, err
 	}
-	a.fallbackState = fallbackStateFromCreateRequest(body, requestSeconds(req))
 	data, err := common.Marshal(body)
 	if err != nil {
 		return nil, err
@@ -360,22 +357,6 @@ func (a *TaskAdaptor) GetModelList() []string { return []string{modelName} }
 
 func (a *TaskAdaptor) GetChannelName() string { return channelName }
 
-// GetFallbackState exposes a private, upload-complete H3 request snapshot to
-// the task persistence path. The snapshot is only used if RunningHub later
-// returns its documented CUDA OOM result for a longer generation.
-func (a *TaskAdaptor) GetFallbackState() *model.RunningHubH3FallbackState {
-	if a.fallbackState == nil || a.fallbackState.Request == nil {
-		return nil
-	}
-
-	state := &model.RunningHubH3FallbackState{}
-	*state = *a.fallbackState
-	request := *a.fallbackState.Request
-	request.NodeInfoList = append([]model.RunningHubH3FallbackNode(nil), a.fallbackState.Request.NodeInfoList...)
-	state.Request = &request
-	return state
-}
-
 func (a *TaskAdaptor) ConvertToOpenAIVideo(task *model.Task) ([]byte, error) {
 	video := task.ToOpenAIVideo()
 	video.Model = modelName
@@ -438,30 +419,6 @@ func (a *TaskAdaptor) convertRequest(c *gin.Context, req relaycommon.TaskSubmitR
 		request.Workflow = string(serializedWorkflow)
 	}
 	return request, nil
-}
-
-func fallbackStateFromCreateRequest(request *createRequest, duration int) *model.RunningHubH3FallbackState {
-	if request == nil || duration <= 0 {
-		return nil
-	}
-
-	nodes := make([]model.RunningHubH3FallbackNode, 0, len(request.NodeInfoList))
-	for _, node := range request.NodeInfoList {
-		nodes = append(nodes, model.RunningHubH3FallbackNode{
-			NodeID:     node.NodeID,
-			FieldName:  node.FieldName,
-			FieldValue: node.FieldValue,
-		})
-	}
-	return &model.RunningHubH3FallbackState{
-		Request: &model.RunningHubH3FallbackRequest{
-			WorkflowID:   request.WorkflowID,
-			NodeInfoList: nodes,
-			Workflow:     request.Workflow,
-			InstanceType: request.InstanceType,
-			Duration:     duration,
-		},
-	}
 }
 
 func preparedWorkflowFromContext(c *gin.Context) map[string]any {
