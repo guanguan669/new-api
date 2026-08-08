@@ -79,6 +79,8 @@ import {
   updateUser,
   getUser,
   getGroups,
+  getH3PriceGroups,
+  updateUserH3PriceGroup,
   getPermissionCatalog,
 } from '../api'
 import { BINDING_FIELDS, ERROR_MESSAGES, SUCCESS_MESSAGES } from '../constants'
@@ -89,9 +91,11 @@ import {
   transformFormDataToPayload,
   transformUserToFormDefaults,
 } from '../lib'
-import { type User } from '../types'
+import type { User } from '../types'
 import { UserQuotaDialog } from './user-quota-dialog'
 import { useUsers } from './users-provider'
+
+const H3_PRICE_GROUP_NONE_VALUE = '__none__'
 
 type UsersMutateDrawerProps = {
   open: boolean
@@ -120,6 +124,14 @@ export function UsersMutateDrawer({
 
   const groups = groupsData?.data || []
 
+  const { data: h3PriceGroupsData } = useQuery({
+    queryKey: ['h3-price-groups'],
+    queryFn: getH3PriceGroups,
+    staleTime: 5 * 60 * 1000,
+  })
+
+  const h3PriceGroups = h3PriceGroupsData?.data || []
+
   // Permission catalog is owned by the backend; fetched once and reused.
   const { data: permissionCatalog = EMPTY_PERMISSION_CATALOG } = useQuery({
     queryKey: ['admin-permission-catalog'],
@@ -136,7 +148,7 @@ export function UsersMutateDrawer({
   useEffect(() => {
     if (open && isUpdate && currentRow) {
       // For update, fetch fresh data
-      getUser(currentRow.id).then((result) => {
+      void getUser(currentRow.id).then((result) => {
         if (result.success && result.data) {
           form.reset(transformUserToFormDefaults(result.data))
         }
@@ -155,6 +167,13 @@ export function UsersMutateDrawer({
   const selectedRole = form.watch('role')
   const canEditAdminPermissions = currentUser?.role === ROLE.SUPER_ADMIN
   const targetIsAdmin = (selectedRole ?? currentRow?.role ?? 0) >= ROLE.ADMIN
+
+  const formatH3PriceGroupLabel = (
+    group: string,
+    price768p: number,
+    price2k: number
+  ) =>
+    `${group} (${t('768p')}: ${price768p} CNY/sec, ${t('2K')}: ${price2k} CNY/sec)`
 
   const onSubmit = async (data: UserFormValues) => {
     if (!isUpdate) {
@@ -179,6 +198,18 @@ export function UsersMutateDrawer({
         ? await updateUser(payload as typeof payload & { id: number })
         : await createUser(payload)
 
+      if (result.success && isUpdate && currentRow) {
+        const h3Result = await updateUserH3PriceGroup(
+          currentRow.id,
+          data.h3_price_group || ''
+        )
+
+        if (!h3Result.success) {
+          toast.error(h3Result.message || t(ERROR_MESSAGES.UPDATE_FAILED))
+          return
+        }
+      }
+
       if (result.success) {
         toast.success(
           isUpdate
@@ -195,7 +226,7 @@ export function UsersMutateDrawer({
               : t(ERROR_MESSAGES.CREATE_FAILED))
         )
       }
-    } catch (_error) {
+    } catch {
       toast.error(t(ERROR_MESSAGES.UNEXPECTED))
     } finally {
       setIsSubmitting(false)
@@ -278,7 +309,7 @@ export function UsersMutateDrawer({
                             { value: '10', label: t('Admin') },
                           ]}
                           onValueChange={(value) =>
-                            value !== null && field.onChange(parseInt(value))
+                            value !== null && field.onChange(Number.parseInt(value))
                           }
                           value={String(field.value)}
                         >
@@ -360,12 +391,10 @@ export function UsersMutateDrawer({
                       <FormItem>
                         <FormLabel>{t('Group')}</FormLabel>
                         <Select
-                          items={[
-                            ...groups.map((group) => ({
-                              value: group,
-                              label: group,
-                            })),
-                          ]}
+                          items={groups.map((group) => ({
+                            value: group,
+                            label: group,
+                          }))}
                           onValueChange={field.onChange}
                           value={field.value}
                         >
@@ -384,6 +413,71 @@ export function UsersMutateDrawer({
                             </SelectGroup>
                           </SelectContent>
                         </Select>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name='h3_price_group'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('H3 pricing group')}</FormLabel>
+                        <Select
+                          items={[
+                            {
+                              value: H3_PRICE_GROUP_NONE_VALUE,
+                              label: t('No H3 pricing group'),
+                            },
+                            ...h3PriceGroups.map((priceGroup) => ({
+                              value: priceGroup.group,
+                              label: formatH3PriceGroupLabel(
+                                priceGroup.group,
+                                priceGroup.price_768p,
+                                priceGroup.price_2k
+                              ),
+                            })),
+                          ]}
+                          onValueChange={(value) =>
+                            field.onChange(
+                              value === H3_PRICE_GROUP_NONE_VALUE ? '' : value
+                            )
+                          }
+                          value={field.value || H3_PRICE_GROUP_NONE_VALUE}
+                        >
+                          <FormControl>
+                            <SelectTrigger className='w-full'>
+                              <SelectValue
+                                placeholder={t('Select an H3 pricing group')}
+                              />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent alignItemWithTrigger={false}>
+                            <SelectGroup>
+                              <SelectItem value={H3_PRICE_GROUP_NONE_VALUE}>
+                                {t('No H3 pricing group')}
+                              </SelectItem>
+                              {h3PriceGroups.map((priceGroup) => (
+                                <SelectItem
+                                  key={priceGroup.group}
+                                  value={priceGroup.group}
+                                >
+                                  {formatH3PriceGroupLabel(
+                                    priceGroup.group,
+                                    priceGroup.price_768p,
+                                    priceGroup.price_2k
+                                  )}
+                                </SelectItem>
+                              ))}
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
+                        <FormDescription>
+                          {t(
+                            'Optional RunningHub H3 pricing override for this user.'
+                          )}
+                        </FormDescription>
                         <FormMessage />
                       </FormItem>
                     )}

@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
@@ -553,6 +554,52 @@ func TestOverridePriceDataDoesNotApplyNormalGroupMultiplier(t *testing.T) {
 	assert.Equal(t, expectedH3Quota(t, (0.10*5)/7.3), priceData.Quota)
 }
 
+func TestOverridePriceDataUserSettingH3PriceGroupOverridesUsingGroup(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	withRunningHubH3GroupPrices(t, map[string]h3GroupPrice{
+		"using-group":   {Price768P: 0.10, Price2K: 0.30},
+		"setting-group": {Price768P: 0.40, Price2K: 1.20},
+	})
+	withUSDExchangeRate(t, 7.3)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+	ctx.Set("task_request", relaycommon.TaskSubmitReq{Seconds: "5"})
+
+	priceData, ok, err := (&TaskAdaptor{}).OverridePriceData(ctx, &relaycommon.RelayInfo{
+		OriginModelName: modelName,
+		UsingGroup:      "using-group",
+		UserSetting:     dto.UserSetting{RunningHubH3PriceGroup: " setting-group "},
+	})
+
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.InDelta(t, 0.40/7.3, priceData.ModelPrice, 0.000001)
+	assert.Equal(t, expectedH3Quota(t, (0.40*5)/7.3), priceData.Quota)
+}
+
+func TestOverridePriceDataEmptyUserSettingH3PriceGroupFallsBackToUsingGroup(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	withRunningHubH3GroupPrices(t, map[string]h3GroupPrice{
+		"using-group":   {Price768P: 0.10, Price2K: 0.30},
+		"setting-group": {Price768P: 0.40, Price2K: 1.20},
+	})
+	withUSDExchangeRate(t, 7.3)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+	ctx.Set("task_request", relaycommon.TaskSubmitReq{Seconds: "5"})
+
+	priceData, ok, err := (&TaskAdaptor{}).OverridePriceData(ctx, &relaycommon.RelayInfo{
+		OriginModelName: modelName,
+		UsingGroup:      "using-group",
+		UserSetting:     dto.UserSetting{RunningHubH3PriceGroup: "  "},
+	})
+
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.InDelta(t, 0.10/7.3, priceData.ModelPrice, 0.000001)
+	assert.Equal(t, expectedH3Quota(t, (0.10*5)/7.3), priceData.Quota)
+}
+
 func TestOverridePriceDataFallsBackWhenGroupUnconfiguredOrModelDiffers(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	withRunningHubH3GroupPrice(t, "h3-vip", h3GroupPrice{Price768P: 0.10, Price2K: 0.30})
@@ -571,9 +618,15 @@ func TestOverridePriceDataFallsBackWhenGroupUnconfiguredOrModelDiffers(t *testin
 
 func withRunningHubH3GroupPrice(t *testing.T, configuredGroup string, price h3GroupPrice) {
 	t.Helper()
+	withRunningHubH3GroupPrices(t, map[string]h3GroupPrice{configuredGroup: price})
+}
+
+func withRunningHubH3GroupPrices(t *testing.T, configuredPrices map[string]h3GroupPrice) {
+	t.Helper()
 	original := lookupRunningHubH3GroupPrice
 	lookupRunningHubH3GroupPrice = func(group string) (h3GroupPrice, bool) {
-		if group != configuredGroup {
+		price, ok := configuredPrices[group]
+		if !ok {
 			return h3GroupPrice{}, false
 		}
 		return price, true

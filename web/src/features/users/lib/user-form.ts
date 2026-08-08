@@ -27,7 +27,7 @@ import { quotaUnitsToDollars } from '@/lib/format'
 import { ROLE } from '@/lib/roles'
 
 import { DEFAULT_GROUP } from '../constants'
-import { type UserFormData, type User } from '../types'
+import type { UserFormData, User } from '../types'
 
 // ============================================================================
 // Form Schema
@@ -44,9 +44,24 @@ export const userFormSchema = z.object({
   admin_permissions: z
     .record(z.string(), z.record(z.string(), z.boolean()))
     .optional(),
+  h3_price_group: z.string().optional(),
 })
 
 export type UserFormValues = z.infer<typeof userFormSchema>
+
+const H3_PRICE_GROUP_SETTING_KEY = 'runninghub_h3_price_group'
+
+function parseH3PriceGroupFromSetting(setting?: string): string {
+  if (!setting) return ''
+
+  try {
+    const parsed = JSON.parse(setting) as Record<string, unknown>
+    const group = parsed[H3_PRICE_GROUP_SETTING_KEY]
+    return typeof group === 'string' ? group : ''
+  } catch {
+    return ''
+  }
+}
 
 // ============================================================================
 // Form Defaults
@@ -62,6 +77,7 @@ export const USER_FORM_DEFAULT_VALUES: UserFormValues = {
   remark: '',
   // Filled against the backend catalog at render time; see UsersMutateDrawer.
   admin_permissions: {},
+  h3_price_group: '',
 }
 
 // ============================================================================
@@ -122,5 +138,6 @@ export function transformUserToFormDefaults(user: User): UserFormValues {
     group: user.group || DEFAULT_GROUP,
     remark: user.remark || '',
     admin_permissions: user.admin_permissions ?? {},
+    h3_price_group: parseH3PriceGroupFromSetting(user.setting),
   }
 }

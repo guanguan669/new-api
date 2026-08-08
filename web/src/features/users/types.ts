@@ -58,6 +58,7 @@ export const userSchema = z.object({
   updated_at: z.number().optional(),
   last_login_at: z.number().optional(),
   DeletedAt: z.any().nullable().optional(),
+  setting: z.string().optional(),
   remark: z.string().optional(),
   admin_permissions: z
     .record(z.string(), z.record(z.string(), z.boolean()))
@@ -126,6 +127,12 @@ export interface UserFormData {
   group?: string // Only used when updating user
   remark?: string // Only used when updating user
   admin_permissions?: AdminPermissionMatrix
+}
+
+export interface H3PriceGroup {
+  group: string
+  price_768p: number
+  price_2k: number
 }
 
 export type ManageUserAction =

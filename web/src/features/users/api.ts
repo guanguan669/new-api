@@ -28,6 +28,7 @@ import type {
   ManageUserAction,
   ManageUserQuotaPayload,
   ApiResponse,
+  H3PriceGroup,
 } from './types'
 
 // ============================================================================
@@ -159,6 +160,25 @@ export async function resetUserTwoFA(id: number): Promise<ApiResponse> {
  */
 export async function getGroups(): Promise<ApiResponse<string[]>> {
   const res = await api.get('/api/group/')
+  return res.data
+}
+
+/**
+ * Get all H3 pricing groups.
+ */
+export async function getH3PriceGroups(): Promise<ApiResponse<H3PriceGroup[]>> {
+  const res = await api.get('/api/user/h3-price-groups')
+  return res.data
+}
+
+/**
+ * Update user's H3 pricing group.
+ */
+export async function updateUserH3PriceGroup(
+  id: number,
+  group: string
+): Promise<ApiResponse> {
+  const res = await api.put(`/api/user/${id}/h3-price-group`, { group })
   return res.data
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +21,7 @@ import (
 	"github.com/QuantumNous/new-api/service/authz"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/QuantumNous/new-api/constant"
 
@@ -30,6 +32,16 @@ import (
 type LoginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+}
+
+type runningHubH3PriceGroupItem struct {
+	Group     string  `json:"group"`
+	Price768P float64 `json:"price_768p"`
+	Price2K   float64 `json:"price_2k"`
+}
+
+type updateRunningHubH3PriceGroupRequest struct {
+	Group string `json:"group"`
 }
 
 var (
@@ -744,6 +756,76 @@ func UpdateUser(c *gin.Context) {
 		"message": "",
 	})
 	return
+}
+
+func GetRunningHubH3PriceGroups(c *gin.Context) {
+	configured := ratio_setting.GetRunningHubH3GroupPriceCopy()
+	groups := make([]runningHubH3PriceGroupItem, 0, len(configured))
+	for group, price := range configured {
+		groups = append(groups, runningHubH3PriceGroupItem{
+			Group:     group,
+			Price768P: price.Price768P,
+			Price2K:   price.Price2K,
+		})
+	}
+	sort.Slice(groups, func(i, j int) bool {
+		return groups[i].Group < groups[j].Group
+	})
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    groups,
+	})
+}
+
+func UpdateUserRunningHubH3PriceGroup(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+
+	request := updateRunningHubH3PriceGroupRequest{}
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	priceGroup := strings.TrimSpace(request.Group)
+	if priceGroup != "" {
+		if _, ok := ratio_setting.GetRunningHubH3GroupPrice(priceGroup); !ok {
+			common.ApiError(c, fmt.Errorf("runninghub h3 price group is not configured: %s", priceGroup))
+			return
+		}
+	}
+
+	user, err := model.GetUserById(id, false)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if !canManageTargetRole(c.GetInt("role"), user.Role) {
+		common.ApiErrorI18n(c, i18n.MsgUserNoPermissionHigherLevel)
+		return
+	}
+
+	userSetting := user.GetSetting()
+	userSetting.RunningHubH3PriceGroup = priceGroup
+	if err := model.UpdateUserSetting(user.Id, userSetting); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	recordManageAuditFor(c, user.Id, "user.runninghub_h3_price_group.update", map[string]interface{}{
+		"username": user.Username,
+		"id":       user.Id,
+		"group":    priceGroup,
+	})
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data": gin.H{
+			"group": priceGroup,
+		},
+	})
 }
 
 func AdminClearUserBinding(c *gin.Context) {

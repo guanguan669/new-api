@@ -83,7 +83,13 @@ export function getRunningHubH3DisplayPrices(
   selectedGroup?: string
 ): RunningHubH3DisplayPrice[] {
   const group = runningHubH3EffectiveGroup(model, selectedGroup)
-  const customPrice = groupPrices?.[group]
+  const configuredPrices = groupPrices ? Object.values(groupPrices) : []
+  // An individually assigned H3 price group is intentionally independent of
+  // the user's normal/API-key group. The pricing API returns only that one
+  // price group, so prefer it when the active API-key group has no entry.
+  const customPrice =
+    groupPrices?.[group] ??
+    (configuredPrices.length === 1 ? configuredPrices[0] : undefined)
 
   return RUNNING_HUB_H3_DISPLAY_PRICE_PRESETS.map((preset) => {
     const price = customPrice?.[preset.priceKey]

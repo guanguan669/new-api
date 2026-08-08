@@ -51,11 +51,27 @@ func filterRunningHubH3GroupPricesByUsableGroups(usableGroup map[string]string) 
 	return prices
 }
 
+// filterRunningHubH3GroupPricesForUser returns a user's explicitly assigned
+// H3 price group when present. That group is a billing preference, not an API
+// key or account group, so it does not need to be exposed through usableGroup.
+// A stale assignment falls back to the normal visible-group behavior.
+func filterRunningHubH3GroupPricesForUser(usableGroup map[string]string, priceGroup string) map[string]ratio_setting.RunningHubH3GroupPrice {
+	if priceGroup != "" {
+		if price, ok := ratio_setting.GetRunningHubH3GroupPrice(priceGroup); ok {
+			return map[string]ratio_setting.RunningHubH3GroupPrice{
+				priceGroup: price,
+			}
+		}
+	}
+	return filterRunningHubH3GroupPricesByUsableGroups(usableGroup)
+}
+
 func GetPricing(c *gin.Context) {
 	pricing := model.GetPricing()
 	userId, exists := c.Get("id")
 	usableGroup := map[string]string{}
 	groupRatio := map[string]float64{}
+	runningHubH3PriceGroup := ""
 	for s, f := range ratio_setting.GetGroupRatioCopy() {
 		groupRatio[s] = f
 	}
@@ -64,6 +80,7 @@ func GetPricing(c *gin.Context) {
 		user, err := model.GetUserCache(userId.(int))
 		if err == nil {
 			group = user.Group
+			runningHubH3PriceGroup = user.GetSetting().RunningHubH3PriceGroup
 			for g := range groupRatio {
 				ratio, ok := ratio_setting.GetGroupGroupRatio(group, g)
 				if ok {
@@ -90,7 +107,7 @@ func GetPricing(c *gin.Context) {
 		"usable_group":               usableGroup,
 		"supported_endpoint":         model.GetSupportedEndpointMap(),
 		"auto_groups":                service.GetUserAutoGroup(group),
-		"runninghub_h3_group_prices": filterRunningHubH3GroupPricesByUsableGroups(usableGroup),
+		"runninghub_h3_group_prices": filterRunningHubH3GroupPricesForUser(usableGroup, runningHubH3PriceGroup),
 		"pricing_version":            "a42d372ccf0b5dd13ecf71203521f9d2",
 	})
 }

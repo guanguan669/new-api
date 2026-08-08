@@ -236,7 +236,11 @@ func (a *TaskAdaptor) OverridePriceData(c *gin.Context, info *relaycommon.RelayI
 	}
 
 	helper.HandleGroupRatio(c, info)
-	groupPrice, ok := lookupRunningHubH3GroupPrice(info.UsingGroup)
+	priceGroup := strings.TrimSpace(info.UserSetting.RunningHubH3PriceGroup)
+	if priceGroup == "" {
+		priceGroup = info.UsingGroup
+	}
+	groupPrice, ok := lookupRunningHubH3GroupPrice(priceGroup)
 	if !ok {
 		return hosttypes.PriceData{}, false, nil
 	}
