@@ -313,6 +313,43 @@ func TestConvertRequestUsesPlusInstanceFor1080P(t *testing.T) {
 	require.False(t, exists)
 }
 
+func TestConvertRequestUsesPlusInstanceForFifteenSecondOneMegapixelRequest(t *testing.T) {
+	adaptor := &TaskAdaptor{baseURL: "https://runninghub.example", textWorkflowID: "wf-text"}
+
+	body, err := adaptor.convertRequest(&gin.Context{}, relaycommon.TaskSubmitReq{
+		Prompt:   "make a long 1mp video",
+		Duration: 15,
+		Metadata: map[string]any{"megapixels": "1"},
+	}, "secret-key")
+	require.NoError(t, err)
+	require.Equal(t, plusInstanceType, body.InstanceType)
+
+	payload, err := common.Marshal(body)
+	require.NoError(t, err)
+	var serialized map[string]any
+	require.NoError(t, common.Unmarshal(payload, &serialized))
+	require.Equal(t, plusInstanceType, serialized["instanceType"])
+}
+
+func TestConvertRequestOmitsPlusInstanceForFiveSecondOneMegapixelRequest(t *testing.T) {
+	adaptor := &TaskAdaptor{baseURL: "https://runninghub.example", textWorkflowID: "wf-text"}
+
+	body, err := adaptor.convertRequest(&gin.Context{}, relaycommon.TaskSubmitReq{
+		Prompt:   "make a short 1mp video",
+		Duration: 5,
+		Metadata: map[string]any{"megapixels": "1"},
+	}, "secret-key")
+	require.NoError(t, err)
+	require.Empty(t, body.InstanceType)
+
+	payload, err := common.Marshal(body)
+	require.NoError(t, err)
+	var serialized map[string]any
+	require.NoError(t, common.Unmarshal(payload, &serialized))
+	_, exists := serialized["instanceType"]
+	require.False(t, exists)
+}
+
 func TestConvertRequestUsesTextWorkflowWithoutReferenceImages(t *testing.T) {
 	adaptor := &TaskAdaptor{baseURL: "https://runninghub.example", imageWorkflowID: "wf-image", textWorkflowID: "wf-text"}
 
@@ -718,6 +755,17 @@ func TestDoResponseAndParseTaskResult(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, string(model.TaskStatusFailure), info.Status)
 	require.Equal(t, "bad input", info.Reason)
+}
+
+func TestParseTaskResultIncludesFailedReasonExceptionMessageWithErrorCode(t *testing.T) {
+	adaptor := &TaskAdaptor{}
+
+	info, err := adaptor.ParseTaskResult([]byte(`{"code":805,"msg":"805","data":{"status":"FAILED","failedReason":{"exception_message":"GPU out of memory"}}}`))
+	require.NoError(t, err)
+	require.Equal(t, string(model.TaskStatusFailure), info.Status)
+	require.Contains(t, info.Reason, "805")
+	require.Contains(t, info.Reason, "GPU out of memory")
+	require.NotEqual(t, "805", info.Reason)
 }
 
 func TestPrepareWorkflowKeepsSaveVideoAndRemovesCompetingImageOutput(t *testing.T) {

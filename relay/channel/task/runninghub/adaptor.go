@@ -43,6 +43,7 @@ const (
 	defaultMultiple            = 32
 	plusInstanceType           = "plus"
 	plusInstanceMegapixels     = 2.0
+	plusInstanceMinSeconds     = 15
 	maxImages                  = 9
 	maxAudios                  = 3
 	maxAspectRatioGap          = 0.06
@@ -407,7 +408,14 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 	taskInfo := &relaycommon.TaskInfo{Code: code}
 	if !isRunningHubSuccessCode(code) {
 		taskInfo.Status = string(model.TaskStatusFailure)
-		taskInfo.Reason = message
+		taskInfo.Reason = runningHubTaskFailureReason(data, message)
+		if code != 0 && !strings.HasPrefix(taskInfo.Reason, strconv.Itoa(code)+":") {
+			if taskInfo.Reason == "" {
+				taskInfo.Reason = strconv.Itoa(code)
+			} else {
+				taskInfo.Reason = strconv.Itoa(code) + ": " + taskInfo.Reason
+			}
+		}
 		taskInfo.Progress = "100%"
 		return taskInfo, nil
 	}
@@ -417,10 +425,7 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 	taskInfo.Status = string(taskStatus)
 	taskInfo.Progress = progress
 	if taskStatus == model.TaskStatusFailure {
-		taskInfo.Reason = firstString(data, "error", "errorCode", "error_code", "errorMsg", "error_msg", "errorMessage", "msg", "message", "failReason")
-		if taskInfo.Reason == "" {
-			taskInfo.Reason = message
-		}
+		taskInfo.Reason = runningHubTaskFailureReason(data, message)
 	}
 	if taskStatus == model.TaskStatusSuccess {
 		taskInfo.Url = selectResultURL(data)
@@ -430,6 +435,28 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 		}
 	}
 	return taskInfo, nil
+}
+
+func runningHubTaskFailureReason(data map[string]any, fallback string) string {
+	errorCode := firstString(data, "errorCode", "error_code")
+	if failedReason, ok := data["failedReason"].(map[string]any); ok {
+		detail := firstString(failedReason, "exception_message", "exceptionMessage", "message", "errorMessage", "error", "reason", "detail")
+		if detail != "" {
+			if errorCode != "" {
+				return errorCode + ": " + detail
+			}
+			return detail
+		}
+	}
+
+	reason := firstString(data, "error", "errorMsg", "error_msg", "errorMessage", "msg", "message")
+	if reason == "" {
+		reason = fallback
+	}
+	if reason == "" {
+		reason = errorCode
+	}
+	return reason
 }
 
 func (a *TaskAdaptor) GetModelList() []string { return []string{modelName} }
@@ -480,7 +507,7 @@ func (a *TaskAdaptor) convertRequest(c *gin.Context, req relaycommon.TaskSubmitR
 		APIKey:       apiKey,
 		WorkflowID:   workflowID,
 		NodeInfoList: nodes,
-		InstanceType: h3InstanceTypeForSelector(selector),
+		InstanceType: h3InstanceTypeForRequest(req, selector),
 	}
 	if workflow := preparedWorkflowFromContext(c); workflow != nil {
 		for _, node := range nodes {
@@ -937,10 +964,14 @@ func h3MegapixelBillingRatio(value any) float64 {
 }
 
 // RunningHub requires the plus instance for H3's 1080P / 2.0 megapixel tier.
-// Lower H3 tiers use the default instance and omit the selector entirely.
-func h3InstanceTypeForSelector(selector h3Selector) string {
+// Its default instance also exhausts VRAM on 15-second H3 jobs, so long jobs
+// use the 48G plus instance even at lower resolutions.
+func h3InstanceTypeForRequest(req relaycommon.TaskSubmitReq, selector h3Selector) string {
 	megapixels, ok := h3MegapixelFloat(selector.Megapixels)
 	if ok && math.Abs(megapixels-plusInstanceMegapixels) < 0.000001 {
+		return plusInstanceType
+	}
+	if requestSeconds(req) >= plusInstanceMinSeconds {
 		return plusInstanceType
 	}
 	return ""
