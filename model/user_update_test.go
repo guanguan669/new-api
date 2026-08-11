@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -74,6 +75,7 @@ func TestUpdateUserSettingOnlyUpdatesSetting(t *testing.T) {
 		UsedQuota:    20,
 		RequestCount: 3,
 	}
+	user.SetSetting(dto.UserSetting{RunningHubH3PriceGroup: "vip"})
 	require.NoError(t, DB.Create(&user).Error)
 
 	require.NoError(t, DB.Model(&User{}).Where("id = ?", user.Id).Updates(map[string]interface{}{
@@ -90,6 +92,96 @@ func TestUpdateUserSettingOnlyUpdatesSetting(t *testing.T) {
 	assert.Equal(t, 270, got.UsedQuota)
 	assert.Equal(t, 4, got.RequestCount)
 	assert.Equal(t, "zh", got.GetSetting().Language)
+	assert.Equal(t, "vip", got.GetSetting().RunningHubH3PriceGroup)
+}
+
+func TestMutateUserSettingPreservesUnrelatedFieldsAndConcurrentChanges(t *testing.T) {
+	setupUserUpdateTestState(t)
+
+	user := User{
+		Id:       3,
+		Username: "setting-mutate-user",
+		Password: "password",
+		Status:   common.UserStatusEnabled,
+	}
+	user.SetSetting(dto.UserSetting{
+		Language:               "en",
+		SidebarModules:         `{"console":true}`,
+		BillingPreference:      "wallet",
+		RunningHubH3PriceGroup: "vip",
+	})
+	require.NoError(t, DB.Create(&user).Error)
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		errs <- MutateUserSetting(user.Id, func(setting *dto.UserSetting) error {
+			setting.Language = "zh"
+			return nil
+		})
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		errs <- MutateUserSetting(user.Id, func(setting *dto.UserSetting) error {
+			setting.BillingPreference = "subscription"
+			return nil
+		})
+	}()
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+	require.NoError(t, MutateUserSetting(user.Id, func(setting *dto.UserSetting) error {
+		setting.RecordIpLog = true
+		setting.RunningHubH3PriceGroup = "ignored"
+		return nil
+	}))
+
+	var got User
+	require.NoError(t, DB.First(&got, user.Id).Error)
+	setting := got.GetSetting()
+	assert.Equal(t, "zh", setting.Language)
+	assert.Equal(t, "subscription", setting.BillingPreference)
+	assert.Equal(t, `{"console":true}`, setting.SidebarModules)
+	assert.Equal(t, "vip", setting.RunningHubH3PriceGroup)
+	assert.True(t, setting.RecordIpLog)
+}
+
+func TestUserUpdateDoesNotReplayStaleH3PricingTier(t *testing.T) {
+	setupUserUpdateTestState(t)
+
+	user := User{
+		Id:          4,
+		Username:    "stale-setting-user",
+		Password:    "password",
+		DisplayName: "before",
+		Status:      common.UserStatusEnabled,
+	}
+	user.SetSetting(dto.UserSetting{RunningHubH3PriceGroup: "basic", Language: "en"})
+	require.NoError(t, DB.Create(&user).Error)
+
+	stale, err := GetUserById(user.Id, true)
+	require.NoError(t, err)
+	latestSetting := user.GetSetting()
+	latestSetting.RunningHubH3PriceGroup = "pro"
+	latestSettingBytes, err := common.Marshal(latestSetting)
+	require.NoError(t, err)
+	require.NoError(t, DB.Model(&User{}).Where("id = ?", user.Id).Update("setting", string(latestSettingBytes)).Error)
+
+	stale.DisplayName = "after"
+	require.NoError(t, stale.Update(false))
+
+	var got User
+	require.NoError(t, DB.First(&got, user.Id).Error)
+	assert.Equal(t, "after", got.DisplayName)
+	assert.Equal(t, "pro", got.GetSetting().RunningHubH3PriceGroup)
 }
 
 func TestEnsureEmailAvailableRejectsExistingEmailCaseInsensitive(t *testing.T) {

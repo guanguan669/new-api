@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Pencil } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useForm } from 'react-hook-form'
@@ -109,6 +109,7 @@ export function UsersMutateDrawer({
   currentRow,
 }: UsersMutateDrawerProps) {
   const { t } = useTranslation()
+  const queryClient = useQueryClient()
   const isUpdate = !!currentRow
   const { triggerRefresh } = useUsers()
   const currentUser = useAuthStore((s) => s.auth.user)
@@ -213,6 +214,16 @@ export function UsersMutateDrawer({
           toast.error(h3Result.message || t(ERROR_MESSAGES.UPDATE_FAILED))
           return
         }
+
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['h3-price-groups'] }),
+          queryClient.invalidateQueries({
+            queryKey: ['h3-price-group-users'],
+          }),
+          queryClient.invalidateQueries({
+            queryKey: ['h3-pricing-tier-user-search'],
+          }),
+        ])
       }
 
       if (result.success) {
@@ -314,7 +325,8 @@ export function UsersMutateDrawer({
                             { value: '10', label: t('Admin') },
                           ]}
                           onValueChange={(value) =>
-                            value !== null && field.onChange(Number.parseInt(value))
+                            value !== null &&
+                            field.onChange(Number.parseInt(value))
                           }
                           value={String(field.value)}
                         >
@@ -428,12 +440,12 @@ export function UsersMutateDrawer({
                     name='h3_price_group'
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>{t('H3 pricing plan')}</FormLabel>
+                        <FormLabel>{t('H3 pricing tier')}</FormLabel>
                         <Select
                           items={[
                             {
                               value: H3_PRICE_GROUP_NONE_VALUE,
-                              label: t('No H3 pricing plan'),
+                              label: t('No H3 pricing tier'),
                             },
                             ...h3PricingPlans.map((pricingPlan) => ({
                               value: pricingPlan.group,
@@ -454,14 +466,14 @@ export function UsersMutateDrawer({
                           <FormControl>
                             <SelectTrigger className='w-full'>
                               <SelectValue
-                                placeholder={t('Select an H3 pricing plan')}
+                                placeholder={t('Select an H3 pricing tier')}
                               />
                             </SelectTrigger>
                           </FormControl>
                           <SelectContent alignItemWithTrigger={false}>
                             <SelectGroup>
                               <SelectItem value={H3_PRICE_GROUP_NONE_VALUE}>
-                                {t('No H3 pricing plan')}
+                                {t('No H3 pricing tier')}
                               </SelectItem>
                               {h3PricingPlans.map((pricingPlan) => (
                                 <SelectItem
@@ -480,7 +492,7 @@ export function UsersMutateDrawer({
                         </Select>
                         <FormDescription>
                           {t(
-                            'Optional H3 pricing plan assigned only to this user.'
+                            'This changes only the H3 pricing tier. The user keeps the same normal routing group.'
                           )}
                         </FormDescription>
                         <FormMessage />

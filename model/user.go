@@ -33,6 +33,17 @@ type UserSortOptions struct {
 	SortOrder string
 }
 
+type RunningHubH3PriceGroupUser struct {
+	Id          int    `json:"id"`
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name"`
+	Email       string `json:"email"`
+	Role        int    `json:"role"`
+	Status      int    `json:"status"`
+	Group       string `json:"group"`
+	Setting     string `json:"-"`
+}
+
 func NewUserSortOptions(sortBy string, sortOrder string) UserSortOptions {
 	normalizedSortBy := strings.ToLower(strings.TrimSpace(sortBy))
 	normalizedSortOrder := strings.ToLower(strings.TrimSpace(sortOrder))
@@ -159,19 +170,60 @@ func (user *User) SetSetting(setting dto.UserSetting) {
 	user.Setting = string(settingBytes)
 }
 
-func UpdateUserSetting(userId int, setting dto.UserSetting) error {
+func MutateUserSetting(userId int, mutate func(*dto.UserSetting) error) error {
 	if userId == 0 {
 		return errors.New("id 为空！")
 	}
-	settingBytes, err := common.Marshal(setting)
+	if mutate == nil {
+		return errors.New("user setting mutator is nil")
+	}
+
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var current User
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("id", "setting").
+			First(&current, "id = ?", userId).Error; err != nil {
+			return err
+		}
+
+		currentSetting := dto.UserSetting{}
+		if current.Setting != "" {
+			if err := common.Unmarshal([]byte(current.Setting), &currentSetting); err != nil {
+				return fmt.Errorf("failed to decode user settings: %w", err)
+			}
+		}
+		priceGroup := currentSetting.RunningHubH3PriceGroup
+		if err := mutate(&currentSetting); err != nil {
+			return err
+		}
+		currentSetting.RunningHubH3PriceGroup = priceGroup
+		settingBytes, err := common.Marshal(currentSetting)
+		if err != nil {
+			return err
+		}
+		return tx.Model(&User{}).
+			Where("id = ?", userId).
+			Update("setting", string(settingBytes)).Error
+	})
 	if err != nil {
 		return err
 	}
-	settingValue := string(settingBytes)
-	if err = DB.Model(&User{}).Where("id = ?", userId).Update("setting", settingValue).Error; err != nil {
+	if err := PublishUserAuthCache(userId); err != nil {
+		if invalidateErr := InvalidateUserCache(userId); invalidateErr != nil {
+			common.SysLog("failed to invalidate user cache after settings update: " + invalidateErr.Error())
+		}
 		return err
 	}
-	return updateUserSettingCache(userId, settingValue)
+	return nil
+}
+
+// UpdateUserSetting keeps its historical replace semantics for ordinary user
+// settings, but the administrator-owned H3 pricing tier is always preserved.
+func UpdateUserSetting(userId int, setting dto.UserSetting) error {
+	return MutateUserSetting(userId, func(current *dto.UserSetting) error {
+		*current = setting
+		return nil
+	})
 }
 
 // 根据用户角色生成默认的边栏配置
@@ -450,6 +502,15 @@ func SearchUsers(keyword string, group string, role *int, status *int, startIdx 
 	return users, total, nil
 }
 
+func GetRunningHubH3PriceGroupUserCandidates() ([]RunningHubH3PriceGroupUser, error) {
+	users := make([]RunningHubH3PriceGroupUser, 0)
+	err := DB.Model(&User{}).
+		Select("id", "username", "display_name", "email", "role", "status", "group", "setting").
+		Order("id DESC").
+		Find(&users).Error
+	return users, err
+}
+
 func GetUserById(id int, selectAll bool) (*User, error) {
 	if id == 0 {
 		return nil, errors.New("id 为空！")
@@ -490,14 +551,18 @@ func HardDeleteUserById(id int) error {
 }
 
 func inviteUser(inviterId int) (err error) {
-	user, err := GetUserById(inviterId, true)
-	if err != nil {
-		return err
+	result := DB.Model(&User{}).Where("id = ?", inviterId).Updates(map[string]interface{}{
+		"aff_count":   gorm.Expr("aff_count + ?", 1),
+		"aff_quota":   gorm.Expr("aff_quota + ?", common.QuotaForInviter),
+		"aff_history": gorm.Expr("aff_history + ?", common.QuotaForInviter),
+	})
+	if result.Error != nil {
+		return result.Error
 	}
-	user.AffCount++
-	user.AffQuota += common.QuotaForInviter
-	user.AffHistoryQuota += common.QuotaForInviter
-	return DB.Save(user).Error
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 func (user *User) TransferAffQuotaToQuota(quota int) error {
@@ -529,7 +594,10 @@ func (user *User) TransferAffQuotaToQuota(quota int) error {
 	user.Quota += quota
 
 	// 保存用户状态
-	if err := tx.Save(user).Error; err != nil {
+	if err := tx.Model(&User{}).Where("id = ?", user.Id).Updates(map[string]interface{}{
+		"aff_quota": user.AffQuota,
+		"quota":     user.Quota,
+	}).Error; err != nil {
 		return err
 	}
 
@@ -622,11 +690,14 @@ func (user *User) finishInsert(inviterId int) {
 		// 生成基于角色的默认边栏配置
 		defaultSidebarConfig := generateDefaultSidebarConfigForRole(createdUser.Role)
 		if defaultSidebarConfig != "" {
-			currentSetting := createdUser.GetSetting()
-			currentSetting.SidebarModules = defaultSidebarConfig
-			createdUser.SetSetting(currentSetting)
-			createdUser.Update(false)
-			common.SysLog(fmt.Sprintf("为新用户 %s (角色: %d) 初始化边栏配置", createdUser.Username, createdUser.Role))
+			if err := MutateUserSetting(createdUser.Id, func(setting *dto.UserSetting) error {
+				setting.SidebarModules = defaultSidebarConfig
+				return nil
+			}); err != nil {
+				common.SysLog(fmt.Sprintf("failed to initialize sidebar config for user %s: %s", createdUser.Username, err.Error()))
+			} else {
+				common.SysLog(fmt.Sprintf("为新用户 %s (角色: %d) 初始化边栏配置", createdUser.Username, createdUser.Role))
+			}
 		}
 	}
 
@@ -679,11 +750,14 @@ func (user *User) FinalizeOAuthUserCreation(inviterId int) {
 	if err := DB.Where("id = ?", user.Id).First(&createdUser).Error; err == nil {
 		defaultSidebarConfig := generateDefaultSidebarConfigForRole(createdUser.Role)
 		if defaultSidebarConfig != "" {
-			currentSetting := createdUser.GetSetting()
-			currentSetting.SidebarModules = defaultSidebarConfig
-			createdUser.SetSetting(currentSetting)
-			createdUser.Update(false)
-			common.SysLog(fmt.Sprintf("为新用户 %s (角色: %d) 初始化边栏配置", createdUser.Username, createdUser.Role))
+			if err := MutateUserSetting(createdUser.Id, func(setting *dto.UserSetting) error {
+				setting.SidebarModules = defaultSidebarConfig
+				return nil
+			}); err != nil {
+				common.SysLog(fmt.Sprintf("failed to initialize sidebar config for user %s: %s", createdUser.Username, err.Error()))
+			} else {
+				common.SysLog(fmt.Sprintf("为新用户 %s (角色: %d) 初始化边栏配置", createdUser.Username, createdUser.Role))
+			}
 		}
 	}
 
@@ -748,7 +822,7 @@ func (user *User) UpdateWithTx(tx *gorm.DB, updatePassword bool) error {
 			return err
 		}
 	}
-	if err = tx.Model(&current).Omit("quota", "used_quota", "request_count", "auth_version").Updates(newUser).Error; err != nil {
+	if err = tx.Model(&current).Omit("quota", "used_quota", "request_count", "auth_version", "setting").Updates(newUser).Error; err != nil {
 		return err
 	}
 	return tx.First(user, user.Id).Error

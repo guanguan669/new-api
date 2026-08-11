@@ -423,9 +423,13 @@ export function RatioSettingsCard({
         await updateOption.mutateAsync({ key: apiKey, value: normalized[key] })
       }
 
+      if (updates.includes('RunningHubH3GroupPrice')) {
+        await queryClient.invalidateQueries({ queryKey: ['h3-price-groups'] })
+      }
+
       groupNormalizedDefaults.current = normalized
     },
-    [updateOption]
+    [queryClient, updateOption]
   )
 
   const handleResetRatios = useCallback(() => {

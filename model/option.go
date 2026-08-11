@@ -1,11 +1,16 @@
 package model
 
 import (
+	"errors"
+	"fmt"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -13,7 +18,12 @@ import (
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
+
+const runningHubH3NamespacedPriceOptionKey = "group_ratio_setting.runninghub_h3_group_price"
+
+var runningHubH3PriceOptionMu sync.Mutex
 
 type Option struct {
 	Key   string `json:"key" gorm:"primaryKey"`
@@ -194,16 +204,34 @@ func loadOptionsFromDatabase() {
 }
 
 func loadOptionValues(options []*Option) {
+	var canonicalH3Option *Option
+	var namespacedH3Option *Option
 	for _, option := range options {
 		if isGroupRatioOptionKey(option.Key) {
 			applyLoadedOption(option)
 		}
+		if option.Key == ratio_setting.RunningHubH3GroupPriceOptionKey {
+			canonicalH3Option = option
+		}
+		if option.Key == runningHubH3NamespacedPriceOptionKey {
+			namespacedH3Option = option
+		}
 	}
 	for _, option := range options {
-		if isGroupRatioOptionKey(option.Key) {
+		if isGroupRatioOptionKey(option.Key) || isRunningHubH3GroupPriceOptionKey(option.Key) {
 			continue
 		}
 		applyLoadedOption(option)
+	}
+
+	h3Option := canonicalH3Option
+	if h3Option == nil || strings.TrimSpace(h3Option.Value) == "" {
+		h3Option = namespacedH3Option
+	}
+	if h3Option != nil {
+		normalized := *h3Option
+		normalized.Key = ratio_setting.RunningHubH3GroupPriceOptionKey
+		applyLoadedOption(&normalized)
 	}
 }
 
@@ -238,7 +266,10 @@ func validateOptionValue(key string, value string) error {
 		return operation_setting.ValidateToolPricesJSON(value)
 	}
 	if isRunningHubH3GroupPriceOptionKey(key) {
-		return ratio_setting.ValidateRunningHubH3GroupPriceJSON(value)
+		if err := ratio_setting.ValidateRunningHubH3GroupPriceJSON(value); err != nil {
+			return err
+		}
+		return validateRunningHubH3PriceGroupRemoval(value)
 	}
 	if key == "MaxTokenAutoGroups" {
 		return setting.ValidateMaxTokenAutoGroups(value)
@@ -246,15 +277,174 @@ func validateOptionValue(key string, value string) error {
 	return nil
 }
 
+func validateRunningHubH3PriceGroupRemoval(value string) error {
+	next := make(map[string]ratio_setting.RunningHubH3GroupPrice)
+	if err := common.UnmarshalJsonStr(value, &next); err != nil {
+		return err
+	}
+	return validateRunningHubH3PriceGroupRemovalWithTx(
+		DB,
+		ratio_setting.GetRunningHubH3GroupPriceCopy(),
+		next,
+	)
+}
+
+func validateRunningHubH3PriceGroupRemovalWithTx(
+	tx *gorm.DB,
+	current map[string]ratio_setting.RunningHubH3GroupPrice,
+	next map[string]ratio_setting.RunningHubH3GroupPrice,
+) error {
+	removed := make(map[string]struct{})
+	for tier := range current {
+		if _, ok := next[tier]; !ok {
+			removed[tier] = struct{}{}
+		}
+	}
+	if len(removed) == 0 {
+		return nil
+	}
+
+	users := make([]RunningHubH3PriceGroupUser, 0)
+	err := runningHubH3PriceGroupUsersForRemovalQuery(tx).
+		Find(&users).Error
+	if err != nil {
+		return err
+	}
+	assignedCounts := make(map[string]int)
+	for _, user := range users {
+		setting := dto.UserSetting{}
+		if user.Setting != "" && common.Unmarshal([]byte(user.Setting), &setting) != nil {
+			continue
+		}
+		if _, ok := removed[setting.RunningHubH3PriceGroup]; ok {
+			assignedCounts[setting.RunningHubH3PriceGroup]++
+		}
+	}
+	if len(assignedCounts) == 0 {
+		return nil
+	}
+
+	tiers := make([]string, 0, len(assignedCounts))
+	for tier := range assignedCounts {
+		tiers = append(tiers, tier)
+	}
+	sort.Strings(tiers)
+	parts := make([]string, 0, len(tiers))
+	for _, tier := range tiers {
+		parts = append(parts, fmt.Sprintf("%s (%d users)", tier, assignedCounts[tier]))
+	}
+	return fmt.Errorf("cannot remove H3 pricing tiers with assigned users: %s", strings.Join(parts, ", "))
+}
+
+func runningHubH3PriceGroupUsersForRemovalQuery(tx *gorm.DB) *gorm.DB {
+	return tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Model(&User{}).
+		Select("id", "username", "display_name", "email", "role", "status", "group", "setting")
+}
+
+func lockRunningHubH3PriceGroups(tx *gorm.DB) (map[string]ratio_setting.RunningHubH3GroupPrice, error) {
+	options := make([]Option, 0, 2)
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("key IN ?", []string{
+			ratio_setting.RunningHubH3GroupPriceOptionKey,
+			runningHubH3NamespacedPriceOptionKey,
+		}).
+		Order("key ASC").
+		Find(&options).Error
+	if err != nil {
+		return nil, err
+	}
+
+	value := ""
+	for _, option := range options {
+		if option.Key == ratio_setting.RunningHubH3GroupPriceOptionKey && strings.TrimSpace(option.Value) != "" {
+			value = option.Value
+			break
+		}
+	}
+	if value == "" {
+		for _, option := range options {
+			if option.Key == runningHubH3NamespacedPriceOptionKey && strings.TrimSpace(option.Value) != "" {
+				value = option.Value
+				break
+			}
+		}
+	}
+	if value == "" {
+		return map[string]ratio_setting.RunningHubH3GroupPrice{}, nil
+	}
+
+	configured := make(map[string]ratio_setting.RunningHubH3GroupPrice)
+	if err := common.UnmarshalJsonStr(value, &configured); err != nil {
+		return nil, err
+	}
+	return configured, nil
+}
+
+func WithRunningHubH3PriceGroupOptionLock(
+	fn func(tx *gorm.DB, configured map[string]ratio_setting.RunningHubH3GroupPrice) error,
+) error {
+	return DB.Transaction(func(tx *gorm.DB) error {
+		configured, err := lockRunningHubH3PriceGroups(tx)
+		if err != nil {
+			return err
+		}
+		return fn(tx, configured)
+	})
+}
+
+func updateRunningHubH3PriceOption(_ string, value string) error {
+	runningHubH3PriceOptionMu.Lock()
+	defer runningHubH3PriceOptionMu.Unlock()
+
+	if err := ratio_setting.ValidateRunningHubH3GroupPriceJSON(value); err != nil {
+		return err
+	}
+	next := make(map[string]ratio_setting.RunningHubH3GroupPrice)
+	if err := common.UnmarshalJsonStr(value, &next); err != nil {
+		return err
+	}
+
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		option := Option{Key: ratio_setting.RunningHubH3GroupPriceOptionKey}
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&option).Error; err != nil {
+			return err
+		}
+		configured, err := lockRunningHubH3PriceGroups(tx)
+		if err != nil {
+			return err
+		}
+		if err := validateRunningHubH3PriceGroupRemovalWithTx(tx, configured, next); err != nil {
+			return err
+		}
+		if err := tx.Model(&Option{}).
+			Where("key = ?", ratio_setting.RunningHubH3GroupPriceOptionKey).
+			Update("value", value).Error; err != nil {
+			return err
+		}
+		return tx.Where("key = ?", runningHubH3NamespacedPriceOptionKey).Delete(&Option{}).Error
+	})
+	if err != nil {
+		return err
+	}
+	common.OptionMapRWMutex.Lock()
+	delete(common.OptionMap, runningHubH3NamespacedPriceOptionKey)
+	common.OptionMapRWMutex.Unlock()
+	return updateOptionMap(ratio_setting.RunningHubH3GroupPriceOptionKey, value)
+}
+
 func isGroupRatioOptionKey(key string) bool {
 	return key == "GroupRatio" || key == "group_ratio_setting.group_ratio"
 }
 
 func isRunningHubH3GroupPriceOptionKey(key string) bool {
-	return key == ratio_setting.RunningHubH3GroupPriceOptionKey || key == "group_ratio_setting.runninghub_h3_group_price"
+	return key == ratio_setting.RunningHubH3GroupPriceOptionKey || key == runningHubH3NamespacedPriceOptionKey
 }
 
 func UpdateOption(key string, value string) error {
+	if isRunningHubH3GroupPriceOptionKey(key) {
+		return updateRunningHubH3PriceOption(key, value)
+	}
 	if err := validateOptionValue(key, value); err != nil {
 		return err
 	}
@@ -281,6 +471,15 @@ func UpdateOption(key string, value string) error {
 func UpdateOptionsBulk(values map[string]string) error {
 	if len(values) == 0 {
 		return nil
+	}
+	for key, value := range values {
+		if !isRunningHubH3GroupPriceOptionKey(key) {
+			continue
+		}
+		if len(values) != 1 {
+			return errors.New("RunningHubH3GroupPrice cannot be updated with unrelated options")
+		}
+		return updateRunningHubH3PriceOption(key, value)
 	}
 	for key, value := range values {
 		if err := validateOptionValue(key, value); err != nil {

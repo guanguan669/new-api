@@ -29,6 +29,8 @@ import type {
   ManageUserQuotaPayload,
   ApiResponse,
   H3PriceGroup,
+  GetH3PricingPlanUsersParams,
+  GetH3PricingPlanUsersResponse,
 } from './types'
 
 // ============================================================================
@@ -168,6 +170,35 @@ export async function getGroups(): Promise<ApiResponse<string[]>> {
  */
 export async function getH3PriceGroups(): Promise<ApiResponse<H3PriceGroup[]>> {
   const res = await api.get('/api/user/h3-price-groups')
+  return res.data
+}
+
+/**
+ * Get users currently assigned to one H3 pricing tier.
+ */
+export async function getH3PriceGroupUsers(
+  params: GetH3PricingPlanUsersParams
+): Promise<GetH3PricingPlanUsersResponse> {
+  const {
+    group,
+    keyword = '',
+    scope = 'assigned',
+    status,
+    p = 1,
+    page_size = 20,
+  } = params
+  const res = await api.get(
+    `/api/user/h3-price-groups/${encodeURIComponent(group)}/users`,
+    {
+      params: {
+        keyword,
+        scope,
+        status,
+        p,
+        page_size,
+      },
+    }
+  )
   return res.data
 }
 

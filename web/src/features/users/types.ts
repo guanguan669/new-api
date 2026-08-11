@@ -133,6 +133,38 @@ export interface H3PricingPlan {
   group: string
   price_768p: number
   price_2k: number
+  user_count: number
+}
+
+export interface GetH3PricingPlanUsersParams {
+  group: string
+  keyword?: string
+  scope?: 'assigned' | 'available' | 'all'
+  status?: string
+  p?: number
+  page_size?: number
+}
+
+export interface H3PricingTierUser {
+  id: number
+  username: string
+  display_name: string
+  email?: string
+  role: number
+  status: number
+  group: string
+  h3_price_group: string
+}
+
+export interface GetH3PricingPlanUsersResponse {
+  success: boolean
+  message?: string
+  data?: {
+    items: H3PricingTierUser[]
+    total: number
+    page: number
+    page_size: number
+  }
 }
 
 // Keep the API-facing type name compatible with existing callers.

@@ -137,6 +137,7 @@ func SetApiRouter(router *gin.Engine) {
 				adminRoute.POST("/topup/complete", controller.AdminCompleteTopUp)
 				adminRoute.GET("/search", controller.SearchUsers)
 				adminRoute.GET("/h3-price-groups", controller.GetRunningHubH3PriceGroups)
+				adminRoute.GET("/h3-price-groups/:group/users", controller.GetRunningHubH3PriceGroupUsers)
 				adminRoute.PUT("/:id/h3-price-group", controller.UpdateUserRunningHubH3PriceGroup)
 				adminRoute.GET("/:id/oauth/bindings", controller.GetUserOAuthBindingsByAdmin)
 				adminRoute.DELETE("/:id/oauth/bindings/:provider_id", controller.UnbindCustomOAuthByAdmin)

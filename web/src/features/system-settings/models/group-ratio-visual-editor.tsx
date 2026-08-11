@@ -1,3 +1,4 @@
+import { useQuery } from '@tanstack/react-query'
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -23,6 +24,7 @@ import {
   Info,
   Plus,
   Trash2,
+  UsersRound,
 } from 'lucide-react'
 import {
   useState,
@@ -33,6 +35,7 @@ import {
   type ReactNode,
 } from 'react'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { StaticRowActions } from '@/components/data-table/static/static-row-actions'
@@ -74,8 +77,10 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet'
+import { getH3PriceGroups } from '@/features/users/api'
 
 import { safeJsonParse } from '../utils/json-parser'
+import { H3PricingTierUsersSheet } from './h3-pricing-tier-users-sheet'
 
 type GroupRatioVisualEditorProps = {
   groupRatio: string
@@ -732,8 +737,23 @@ function RunningHubH3GroupPriceEditor({
 }: RunningHubH3GroupPriceEditorProps) {
   const { t } = useTranslation()
   const [newPlanName, setNewPlanName] = useState('')
+  const [managedTier, setManagedTier] = useState<string | null>(null)
+
+  const { data: persistedTiersData } = useQuery({
+    queryKey: ['h3-price-groups'],
+    queryFn: getH3PriceGroups,
+    staleTime: 30 * 1000,
+  })
 
   const priceMap = useMemo(() => parseRunningHubH3GroupPriceMap(value), [value])
+  const persistedTiers = useMemo(
+    () =>
+      new Map(
+        (persistedTiersData?.data ?? []).map((tier) => [tier.group, tier])
+      ),
+    [persistedTiersData]
+  )
+  const managedTierPrice = managedTier ? priceMap[managedTier] : undefined
   const normalizedPlanName = newPlanName.trim()
   const planNameExists = Object.hasOwn(priceMap, normalizedPlanName)
   const planNameReserved = ['auto', '__none__'].includes(normalizedPlanName)
@@ -786,11 +806,21 @@ function RunningHubH3GroupPriceEditor({
 
   const removePlan = useCallback(
     (plan: string) => {
+      const assignedUserCount = persistedTiers.get(plan)?.user_count ?? 0
+      if (assignedUserCount > 0) {
+        toast.error(
+          t(
+            'Move or remove all {{count}} assigned users before deleting this H3 pricing tier.',
+            { count: assignedUserCount }
+          )
+        )
+        return
+      }
       const nextMap = { ...priceMap }
       delete nextMap[plan]
       emitMap(nextMap)
     },
-    [emitMap, priceMap]
+    [emitMap, persistedTiers, priceMap, t]
   )
 
   return (
@@ -798,18 +828,18 @@ function RunningHubH3GroupPriceEditor({
       <CardHeader className={sectionHeaderClassName}>
         <div className='flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between'>
           <div>
-            <CardTitle>{t('H3 pricing plans')}</CardTitle>
+            <CardTitle>{t('H3 pricing tiers')}</CardTitle>
             <CardDescription>
               {t(
-                'Create reusable H3 pricing plans in CNY per second, then assign one plan to each user as needed.'
+                'Create multiple H3 pricing tiers in CNY per second. All users can stay in the same normal group while each user receives one pricing tier.'
               )}
             </CardDescription>
           </div>
           <div className='flex flex-wrap gap-2 sm:justify-end'>
             <Input
               value={newPlanName}
-              placeholder={t('Pricing plan name')}
-              aria-label={t('Pricing plan name')}
+              placeholder={t('Pricing tier name')}
+              aria-label={t('Pricing tier name')}
               aria-invalid={planNameExists || planNameReserved}
               maxLength={64}
               onChange={(event) => setNewPlanName(event.target.value)}
@@ -830,7 +860,7 @@ function RunningHubH3GroupPriceEditor({
               }
             >
               <Plus className='mr-2 h-4 w-4' />
-              {t('Add pricing plan')}
+              {t('Add pricing tier')}
             </Button>
           </div>
         </div>
@@ -841,11 +871,11 @@ function RunningHubH3GroupPriceEditor({
             data={rows}
             getRowKey={(row) => row.plan}
             emptyClassName='text-muted-foreground h-20 text-sm'
-            emptyContent={t('No H3 pricing plans configured.')}
+            emptyContent={t('No H3 pricing tiers configured.')}
             columns={[
               {
                 id: 'plan',
-                header: t('Pricing plan'),
+                header: t('Pricing tier'),
                 className: 'min-w-40',
                 cell: (row) => <span className='font-medium'>{row.plan}</span>,
               },
@@ -898,6 +928,35 @@ function RunningHubH3GroupPriceEditor({
                 ),
               },
               {
+                id: 'users',
+                header: t('Users'),
+                className: 'w-32',
+                cell: (row) => {
+                  const persistedTier = persistedTiers.get(row.plan)
+                  const isPersisted = Boolean(persistedTier)
+                  return (
+                    <span
+                      title={
+                        isPersisted
+                          ? undefined
+                          : t('Save pricing settings before assigning users.')
+                      }
+                    >
+                      <Button
+                        type='button'
+                        variant='outline'
+                        size='sm'
+                        disabled={!isPersisted}
+                        onClick={() => setManagedTier(row.plan)}
+                      >
+                        <UsersRound className='mr-2 h-4 w-4' />
+                        {persistedTier?.user_count ?? 0}
+                      </Button>
+                    </span>
+                  )
+                },
+              },
+              {
                 id: 'actions',
                 header: t('Actions'),
                 className: 'text-right',
@@ -907,7 +966,7 @@ function RunningHubH3GroupPriceEditor({
                     variant='ghost'
                     size='sm'
                     onClick={() => removePlan(row.plan)}
-                    aria-label={t('Remove H3 pricing plan')}
+                    aria-label={t('Remove H3 pricing tier')}
                   >
                     <Trash2 className='h-4 w-4' />
                   </Button>
@@ -918,23 +977,35 @@ function RunningHubH3GroupPriceEditor({
 
           {planNameExists && (
             <p className='text-destructive text-sm'>
-              {t('An H3 pricing plan with this name already exists.')}
+              {t('An H3 pricing tier with this name already exists.')}
             </p>
           )}
           {planNameReserved && (
             <p className='text-destructive text-sm'>
-              {t('This H3 pricing plan name is reserved.')}
+              {t('This H3 pricing tier name is reserved.')}
             </p>
           )}
           {invalidRows.length > 0 && (
             <p className='text-destructive text-sm'>
               {t(
-                'H3 pricing plan prices must be zero or greater. Use 0 for free H3 generation.'
+                'H3 pricing tier prices must be zero or greater. Use 0 for free H3 generation.'
               )}
             </p>
           )}
         </div>
       </CardContent>
+
+      {managedTier && managedTierPrice && (
+        <H3PricingTierUsersSheet
+          open
+          onOpenChange={(open) => {
+            if (!open) setManagedTier(null)
+          }}
+          tier={managedTier}
+          price768P={managedTierPrice.price_768p}
+          price2K={managedTierPrice.price_2k}
+        />
+      )}
     </Card>
   )
 }

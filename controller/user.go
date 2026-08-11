@@ -27,6 +27,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type LoginRequest struct {
@@ -38,6 +39,18 @@ type runningHubH3PriceGroupItem struct {
 	Group     string  `json:"group"`
 	Price768P float64 `json:"price_768p"`
 	Price2K   float64 `json:"price_2k"`
+	UserCount int     `json:"user_count"`
+}
+
+type runningHubH3PriceGroupUserItem struct {
+	Id           int    `json:"id"`
+	Username     string `json:"username"`
+	DisplayName  string `json:"display_name"`
+	Email        string `json:"email"`
+	Role         int    `json:"role"`
+	Status       int    `json:"status"`
+	Group        string `json:"group"`
+	H3PriceGroup string `json:"h3_price_group"`
 }
 
 type updateRunningHubH3PriceGroupRequest struct {
@@ -760,12 +773,32 @@ func UpdateUser(c *gin.Context) {
 
 func GetRunningHubH3PriceGroups(c *gin.Context) {
 	configured := ratio_setting.GetRunningHubH3GroupPriceCopy()
+	users, err := model.GetRunningHubH3PriceGroupUserCandidates()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	actorRole := c.GetInt("role")
+	userCounts := make(map[string]int, len(configured))
+	for _, user := range users {
+		if !canManageTargetRole(actorRole, user.Role) {
+			continue
+		}
+		setting := dto.UserSetting{}
+		if user.Setting != "" && common.Unmarshal([]byte(user.Setting), &setting) != nil {
+			continue
+		}
+		if _, ok := configured[setting.RunningHubH3PriceGroup]; ok {
+			userCounts[setting.RunningHubH3PriceGroup]++
+		}
+	}
 	groups := make([]runningHubH3PriceGroupItem, 0, len(configured))
 	for group, price := range configured {
 		groups = append(groups, runningHubH3PriceGroupItem{
 			Group:     group,
 			Price768P: price.Price768P,
 			Price2K:   price.Price2K,
+			UserCount: userCounts[group],
 		})
 	}
 	sort.Slice(groups, func(i, j int) bool {
@@ -776,6 +809,97 @@ func GetRunningHubH3PriceGroups(c *gin.Context) {
 		"message": "",
 		"data":    groups,
 	})
+}
+
+func GetRunningHubH3PriceGroupUsers(c *gin.Context) {
+	priceGroup := strings.TrimSpace(c.Param("group"))
+	if _, ok := ratio_setting.GetRunningHubH3GroupPrice(priceGroup); !ok {
+		common.ApiError(c, fmt.Errorf("runninghub h3 price group is not configured: %s", priceGroup))
+		return
+	}
+	scope := strings.ToLower(strings.TrimSpace(c.DefaultQuery("scope", "assigned")))
+	if scope != "assigned" && scope != "available" && scope != "all" {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	var status *int
+	if statusValue := strings.TrimSpace(c.Query("status")); statusValue != "" {
+		parsed, err := strconv.Atoi(statusValue)
+		if err != nil {
+			common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+			return
+		}
+		status = &parsed
+	}
+
+	users, err := model.GetRunningHubH3PriceGroupUserCandidates()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	keyword := strings.ToLower(strings.TrimSpace(c.Query("keyword")))
+	actorRole := c.GetInt("role")
+	items := make([]runningHubH3PriceGroupUserItem, 0)
+	for _, user := range users {
+		if !canManageTargetRole(actorRole, user.Role) {
+			continue
+		}
+		if status != nil && user.Status != *status {
+			continue
+		}
+		setting := dto.UserSetting{}
+		if user.Setting != "" && common.Unmarshal([]byte(user.Setting), &setting) != nil {
+			continue
+		}
+		isAssigned := setting.RunningHubH3PriceGroup == priceGroup
+		if (scope == "assigned" && !isAssigned) || (scope == "available" && isAssigned) {
+			continue
+		}
+		if !matchesRunningHubH3UserKeyword(user, keyword) {
+			continue
+		}
+		items = append(items, runningHubH3PriceGroupUserItem{
+			Id:           user.Id,
+			Username:     user.Username,
+			DisplayName:  user.DisplayName,
+			Email:        user.Email,
+			Role:         user.Role,
+			Status:       user.Status,
+			Group:        user.Group,
+			H3PriceGroup: setting.RunningHubH3PriceGroup,
+		})
+	}
+
+	pageInfo := common.GetPageQuery(c)
+	total := len(items)
+	start, end := pageInfo.GetStartIdx(), pageInfo.GetEndIdx()
+	if start < 0 {
+		start = 0
+	}
+	if start > total {
+		start = total
+	}
+	if end < start {
+		end = start
+	}
+	if end > total {
+		end = total
+	}
+	pageInfo.SetTotal(total)
+	pageInfo.SetItems(items[start:end])
+	common.ApiSuccess(c, pageInfo)
+}
+
+func matchesRunningHubH3UserKeyword(user model.RunningHubH3PriceGroupUser, keyword string) bool {
+	if keyword == "" {
+		return true
+	}
+	if id, err := strconv.Atoi(keyword); err == nil && user.Id == id {
+		return true
+	}
+	return strings.Contains(strings.ToLower(user.Username), keyword) ||
+		strings.Contains(strings.ToLower(user.DisplayName), keyword) ||
+		strings.Contains(strings.ToLower(user.Email), keyword)
 }
 
 func UpdateUserRunningHubH3PriceGroup(c *gin.Context) {
@@ -791,26 +915,53 @@ func UpdateUserRunningHubH3PriceGroup(c *gin.Context) {
 		return
 	}
 	priceGroup := strings.TrimSpace(request.Group)
-	if priceGroup != "" {
-		if _, ok := ratio_setting.GetRunningHubH3GroupPrice(priceGroup); !ok {
-			common.ApiError(c, fmt.Errorf("runninghub h3 price group is not configured: %s", priceGroup))
-			return
+	permissionErr := errors.New("cannot manage target user's H3 pricing tier")
+	actorRole := c.GetInt("role")
+	var user model.User
+	err = model.WithRunningHubH3PriceGroupOptionLock(func(tx *gorm.DB, configured map[string]ratio_setting.RunningHubH3GroupPrice) error {
+		if priceGroup != "" {
+			if _, ok := configured[priceGroup]; !ok {
+				return fmt.Errorf("runninghub h3 price group is not configured: %s", priceGroup)
+			}
 		}
-	}
 
-	user, err := model.GetUserById(id, false)
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("id", "username", "role", "setting").
+			First(&user, "id = ?", id).Error; err != nil {
+			return err
+		}
+		if !canManageTargetRole(actorRole, user.Role) {
+			return permissionErr
+		}
+
+		userSetting := dto.UserSetting{}
+		if user.Setting != "" {
+			if err := common.Unmarshal([]byte(user.Setting), &userSetting); err != nil {
+				return fmt.Errorf("failed to decode user settings: %w", err)
+			}
+		}
+		userSetting.RunningHubH3PriceGroup = priceGroup
+		settingBytes, err := common.Marshal(userSetting)
+		if err != nil {
+			return err
+		}
+		user.Setting = string(settingBytes)
+		return tx.Model(&model.User{}).
+			Where("id = ?", user.Id).
+			Update("setting", user.Setting).Error
+	})
+	if errors.Is(err, permissionErr) {
+		common.ApiErrorI18n(c, i18n.MsgUserNoPermissionHigherLevel)
+		return
+	}
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	if !canManageTargetRole(c.GetInt("role"), user.Role) {
-		common.ApiErrorI18n(c, i18n.MsgUserNoPermissionHigherLevel)
-		return
-	}
-
-	userSetting := user.GetSetting()
-	userSetting.RunningHubH3PriceGroup = priceGroup
-	if err := model.UpdateUserSetting(user.Id, userSetting); err != nil {
+	if err := model.PublishUserAuthCache(user.Id); err != nil {
+		if invalidateErr := model.InvalidateUserCache(user.Id); invalidateErr != nil {
+			common.SysLog("failed to invalidate user cache after H3 pricing tier update: " + invalidateErr.Error())
+		}
 		common.ApiError(c, err)
 		return
 	}
@@ -879,21 +1030,15 @@ func UpdateSelf(c *gin.Context) {
 	// 检查是否是用户设置更新请求 (sidebar_modules 或 language)
 	if sidebarModules, sidebarExists := requestData["sidebar_modules"]; sidebarExists {
 		userId := c.GetInt("id")
-		user, err := model.GetUserById(userId, false)
-		if err != nil {
-			common.ApiError(c, err)
+		sidebarModulesStr, ok := sidebarModules.(string)
+		if !ok {
+			common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 			return
 		}
-
-		// 获取当前用户设置
-		currentSetting := user.GetSetting()
-
-		// 更新sidebar_modules字段
-		if sidebarModulesStr, ok := sidebarModules.(string); ok {
-			currentSetting.SidebarModules = sidebarModulesStr
-		}
-
-		if err := model.UpdateUserSetting(user.Id, currentSetting); err != nil {
+		if err := model.MutateUserSetting(userId, func(setting *dto.UserSetting) error {
+			setting.SidebarModules = sidebarModulesStr
+			return nil
+		}); err != nil {
 			common.ApiErrorI18n(c, i18n.MsgUpdateFailed)
 			return
 		}
@@ -905,21 +1050,15 @@ func UpdateSelf(c *gin.Context) {
 	// 检查是否是语言偏好更新请求
 	if language, langExists := requestData["language"]; langExists {
 		userId := c.GetInt("id")
-		user, err := model.GetUserById(userId, false)
-		if err != nil {
-			common.ApiError(c, err)
+		langStr, ok := language.(string)
+		if !ok {
+			common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 			return
 		}
-
-		// 获取当前用户设置
-		currentSetting := user.GetSetting()
-
-		// 更新language字段
-		if langStr, ok := language.(string); ok {
-			currentSetting.Language = langStr
-		}
-
-		if err := model.UpdateUserSetting(user.Id, currentSetting); err != nil {
+		if err := model.MutateUserSetting(userId, func(setting *dto.UserSetting) error {
+			setting.Language = langStr
+			return nil
+		}); err != nil {
 			common.ApiErrorI18n(c, i18n.MsgUpdateFailed)
 			return
 		}
@@ -1576,53 +1715,42 @@ func UpdateUserSetting(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	existingSettings := user.GetSetting()
-	upstreamModelUpdateNotifyEnabled := existingSettings.UpstreamModelUpdateNotifyEnabled
-	if user.Role >= common.RoleAdminUser && req.UpstreamModelUpdateNotifyEnabled != nil {
-		upstreamModelUpdateNotifyEnabled = *req.UpstreamModelUpdateNotifyEnabled
-	}
+	if err := model.MutateUserSetting(user.Id, func(settings *dto.UserSetting) error {
+		settings.NotifyType = req.QuotaWarningType
+		settings.QuotaWarningThreshold = req.QuotaWarningThreshold
+		settings.AcceptUnsetRatioModel = req.AcceptUnsetModelRatioModel
+		settings.RecordIpLog = req.RecordIpLog
+		if user.Role >= common.RoleAdminUser && req.UpstreamModelUpdateNotifyEnabled != nil {
+			settings.UpstreamModelUpdateNotifyEnabled = *req.UpstreamModelUpdateNotifyEnabled
+		}
 
-	// 构建设置
-	settings := dto.UserSetting{
-		NotifyType:                       req.QuotaWarningType,
-		QuotaWarningThreshold:            req.QuotaWarningThreshold,
-		UpstreamModelUpdateNotifyEnabled: upstreamModelUpdateNotifyEnabled,
-		AcceptUnsetRatioModel:            req.AcceptUnsetModelRatioModel,
-		RecordIpLog:                      req.RecordIpLog,
-	}
+		settings.WebhookUrl = ""
+		settings.WebhookSecret = ""
+		settings.NotificationEmail = ""
+		settings.BarkUrl = ""
+		settings.GotifyUrl = ""
+		settings.GotifyToken = ""
+		settings.GotifyPriority = 0
 
-	// 如果是webhook类型,添加webhook相关设置
-	if req.QuotaWarningType == dto.NotifyTypeWebhook {
-		settings.WebhookUrl = req.WebhookUrl
-		if req.WebhookSecret != "" {
+		switch req.QuotaWarningType {
+		case dto.NotifyTypeWebhook:
+			settings.WebhookUrl = req.WebhookUrl
 			settings.WebhookSecret = req.WebhookSecret
+		case dto.NotifyTypeEmail:
+			settings.NotificationEmail = req.NotificationEmail
+		case dto.NotifyTypeBark:
+			settings.BarkUrl = req.BarkUrl
+		case dto.NotifyTypeGotify:
+			settings.GotifyUrl = req.GotifyUrl
+			settings.GotifyToken = req.GotifyToken
+			if req.GotifyPriority < 0 || req.GotifyPriority > 10 {
+				settings.GotifyPriority = 5
+			} else {
+				settings.GotifyPriority = req.GotifyPriority
+			}
 		}
-	}
-
-	// 如果提供了通知邮箱，添加到设置中
-	if req.QuotaWarningType == dto.NotifyTypeEmail && req.NotificationEmail != "" {
-		settings.NotificationEmail = req.NotificationEmail
-	}
-
-	// 如果是Bark类型，添加Bark URL到设置中
-	if req.QuotaWarningType == dto.NotifyTypeBark {
-		settings.BarkUrl = req.BarkUrl
-	}
-
-	// 如果是Gotify类型，添加Gotify配置到设置中
-	if req.QuotaWarningType == dto.NotifyTypeGotify {
-		settings.GotifyUrl = req.GotifyUrl
-		settings.GotifyToken = req.GotifyToken
-		// Gotify优先级范围0-10，超出范围则使用默认值5
-		if req.GotifyPriority < 0 || req.GotifyPriority > 10 {
-			settings.GotifyPriority = 5
-		} else {
-			settings.GotifyPriority = req.GotifyPriority
-		}
-	}
-
-	// 更新用户设置
-	if err := model.UpdateUserSetting(user.Id, settings); err != nil {
+		return nil
+	}); err != nil {
 		common.ApiErrorI18n(c, i18n.MsgUpdateFailed)
 		return
 	}
