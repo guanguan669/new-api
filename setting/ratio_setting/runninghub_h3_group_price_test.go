@@ -1,6 +1,8 @@
 package ratio_setting
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,6 +30,19 @@ func TestRunningHubH3GroupPriceValidationAndGetter(t *testing.T) {
 
 func TestRunningHubH3GroupPriceAllowsPlansOutsideGroupRatio(t *testing.T) {
 	require.NoError(t, ValidateRunningHubH3GroupPriceJSON(`{"private-plan":{"price_768p":0.04,"price_2k":0.3}}`))
+}
+
+func TestRunningHubH3GroupPriceAllowsManyPricingTiers(t *testing.T) {
+	tiers := make(map[string]RunningHubH3GroupPrice, 512)
+	for index := 1; index <= 512; index++ {
+		tiers[fmt.Sprintf("tier_%d", index)] = RunningHubH3GroupPrice{
+			Price768P: 0.04,
+			Price2K:   0.3,
+		}
+	}
+	value, err := json.Marshal(tiers)
+	require.NoError(t, err)
+	require.NoError(t, ValidateRunningHubH3GroupPriceJSON(string(value)))
 }
 
 func TestRunningHubH3GroupPriceUpdateNeverExposesEmptyMap(t *testing.T) {

@@ -81,6 +81,7 @@ import { getH3PriceGroups } from '@/features/users/api'
 
 import { safeJsonParse } from '../utils/json-parser'
 import { H3PricingTierUsersSheet } from './h3-pricing-tier-users-sheet'
+import { getNextRunningHubH3TierName } from './runninghub-h3-tier-utils'
 
 type GroupRatioVisualEditorProps = {
   groupRatio: string
@@ -731,7 +732,7 @@ type RunningHubH3GroupPriceEditorProps = {
   onChange: (field: string, value: string) => void
 }
 
-function RunningHubH3GroupPriceEditor({
+export function RunningHubH3GroupPriceEditor({
   value,
   onChange,
 }: RunningHubH3GroupPriceEditorProps) {
@@ -755,8 +756,11 @@ function RunningHubH3GroupPriceEditor({
   )
   const managedTierPrice = managedTier ? priceMap[managedTier] : undefined
   const normalizedPlanName = newPlanName.trim()
-  const planNameExists = Object.hasOwn(priceMap, normalizedPlanName)
-  const planNameReserved = ['auto', '__none__'].includes(normalizedPlanName)
+  const hasCustomPlanName = normalizedPlanName.length > 0
+  const planNameExists =
+    hasCustomPlanName && Object.hasOwn(priceMap, normalizedPlanName)
+  const planNameReserved =
+    hasCustomPlanName && ['auto', '__none__'].includes(normalizedPlanName)
   const rows = useMemo(
     () =>
       Object.entries(priceMap).map(([plan, price]) => ({
@@ -772,6 +776,9 @@ function RunningHubH3GroupPriceEditor({
       !Number.isFinite(row.price_768p) ||
       !Number.isFinite(row.price_2k)
   )
+  const hasUnsavedTiers =
+    persistedTiersData !== undefined &&
+    rows.some((row) => !persistedTiers.has(row.plan))
   const emitMap = useCallback(
     (nextMap: Record<string, RunningHubH3GroupPrice>) => {
       onChange(
@@ -783,10 +790,11 @@ function RunningHubH3GroupPriceEditor({
   )
 
   const addPlan = useCallback(() => {
-    if (!normalizedPlanName || planNameExists || planNameReserved) return
+    if (planNameExists || planNameReserved) return
+    const planName = normalizedPlanName || getNextRunningHubH3TierName(priceMap)
     emitMap({
       ...priceMap,
-      [normalizedPlanName]: { price_768p: 0.1, price_2k: 0.3 },
+      [planName]: { price_768p: 0.1, price_2k: 0.3 },
     })
     setNewPlanName('')
   }, [emitMap, normalizedPlanName, planNameExists, planNameReserved, priceMap])
@@ -828,18 +836,22 @@ function RunningHubH3GroupPriceEditor({
       <CardHeader className={sectionHeaderClassName}>
         <div className='flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between'>
           <div>
-            <CardTitle>{t('H3 pricing tiers')}</CardTitle>
+            <CardTitle>{t('H3 user pricing tiers')}</CardTitle>
             <CardDescription>
               {t(
-                'Create multiple H3 pricing tiers in CNY per second. All users can stay in the same normal group while each user receives one pricing tier.'
+                'H3 pricing tiers are independent from normal groups and have no quantity limit. Users can stay in the same normal group while each user is assigned one saved tier.'
               )}
             </CardDescription>
           </div>
           <div className='flex flex-wrap gap-2 sm:justify-end'>
             <Input
               value={newPlanName}
-              placeholder={t('Pricing tier name')}
-              aria-label={t('Pricing tier name')}
+              placeholder={t(
+                'Pricing tier name (optional; blank creates tier_N)'
+              )}
+              aria-label={t(
+                'Pricing tier name (optional; blank creates tier_N)'
+              )}
               aria-invalid={planNameExists || planNameReserved}
               maxLength={64}
               onChange={(event) => setNewPlanName(event.target.value)}
@@ -855,9 +867,7 @@ function RunningHubH3GroupPriceEditor({
               type='button'
               size='sm'
               onClick={addPlan}
-              disabled={
-                !normalizedPlanName || planNameExists || planNameReserved
-              }
+              disabled={planNameExists || planNameReserved}
             >
               <Plus className='mr-2 h-4 w-4' />
               {t('Add pricing tier')}
@@ -871,7 +881,9 @@ function RunningHubH3GroupPriceEditor({
             data={rows}
             getRowKey={(row) => row.plan}
             emptyClassName='text-muted-foreground h-20 text-sm'
-            emptyContent={t('No H3 pricing tiers configured.')}
+            emptyContent={t(
+              'No H3 pricing tiers configured. Click Add pricing tier directly or enter a custom name first.'
+            )}
             columns={[
               {
                 id: 'plan',
@@ -974,6 +986,14 @@ function RunningHubH3GroupPriceEditor({
               },
             ]}
           />
+
+          {hasUnsavedTiers && (
+            <p className='text-muted-foreground text-sm'>
+              {t(
+                'New pricing tiers are not active yet. Click Save group ratios before assigning users.'
+              )}
+            </p>
+          )}
 
           {planNameExists && (
             <p className='text-destructive text-sm'>
