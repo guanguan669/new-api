@@ -49,6 +49,7 @@ export interface ModelCardProps {
   showRechargePrice?: boolean
   selectedGroup?: string
   runningHubH3GroupPrices?: Record<string, RunningHubH3GroupPrice>
+  h3PricingPlan?: string
   perf?: ModelPerfBadgeData
 }
 
@@ -187,7 +188,8 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
         {getRunningHubH3DisplayPrices(
           props.model,
           props.runningHubH3GroupPrices,
-          props.selectedGroup
+          props.selectedGroup,
+          props.h3PricingPlan
         ).map((entry) => (
           <span
             className='text-foreground font-mono font-semibold'

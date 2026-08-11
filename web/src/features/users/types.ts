@@ -129,11 +129,14 @@ export interface UserFormData {
   admin_permissions?: AdminPermissionMatrix
 }
 
-export interface H3PriceGroup {
+export interface H3PricingPlan {
   group: string
   price_768p: number
   price_2k: number
 }
+
+// Keep the API-facing type name compatible with existing callers.
+export type H3PriceGroup = H3PricingPlan
 
 export type ManageUserAction =
   | 'promote'

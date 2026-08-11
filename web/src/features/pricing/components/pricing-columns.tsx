@@ -58,6 +58,7 @@ export interface PricingColumnsOptions {
   showRechargePrice?: boolean
   selectedGroup?: string
   runningHubH3GroupPrices?: Record<string, RunningHubH3GroupPrice>
+  h3PricingPlan?: string
 }
 
 export function usePricingColumns(
@@ -71,6 +72,7 @@ export function usePricingColumns(
     showRechargePrice = false,
     selectedGroup,
     runningHubH3GroupPrices,
+    h3PricingPlan,
   } = options
 
   const tokenUnitLabel = tokenUnit === 'K' ? '1K' : '1M'
@@ -188,7 +190,8 @@ export function usePricingColumns(
               {getRunningHubH3DisplayPrices(
                 model,
                 runningHubH3GroupPrices,
-                selectedGroup
+                selectedGroup,
+                h3PricingPlan
               ).map((entry) => (
                 <div
                   className='font-mono text-sm tabular-nums'

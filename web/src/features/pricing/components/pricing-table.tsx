@@ -40,6 +40,7 @@ export interface PricingTableProps {
   showRechargePrice?: boolean
   selectedGroup?: string
   runningHubH3GroupPrices?: Record<string, RunningHubH3GroupPrice>
+  h3PricingPlan?: string
   onModelClick?: (modelName: string) => void
 }
 
@@ -54,6 +55,7 @@ export function PricingTable(props: PricingTableProps) {
     showRechargePrice = false,
     selectedGroup,
     runningHubH3GroupPrices,
+    h3PricingPlan,
     onModelClick,
   } = props
 
@@ -69,6 +71,7 @@ export function PricingTable(props: PricingTableProps) {
     showRechargePrice,
     selectedGroup,
     runningHubH3GroupPrices,
+    h3PricingPlan,
   })
 
   const { table } = useDataTable({

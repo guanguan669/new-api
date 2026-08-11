@@ -1,6 +1,9 @@
 package ratio_setting
 
 import (
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,23 +16,64 @@ func TestRunningHubH3GroupPriceValidationAndGetter(t *testing.T) {
 		require.NoError(t, UpdateRunningHubH3GroupPriceByJSONString(original))
 	})
 
-	require.NoError(t, UpdateRunningHubH3GroupPriceByJSONString(`{"default":{"price_768p":0,"price_2k":0.25},"vip":{"price_768p":0.1,"price_2k":0.5}}`))
+	require.NoError(t, UpdateRunningHubH3GroupPriceByJSONString(`{"standard":{"price_768p":0,"price_2k":0.25},"user-105":{"price_768p":0.1,"price_2k":0.5}}`))
 
-	price, ok := GetRunningHubH3GroupPrice("default")
+	price, ok := GetRunningHubH3GroupPrice("standard")
 	require.True(t, ok)
 	assert.Equal(t, RunningHubH3GroupPrice{Price768P: 0, Price2K: 0.25}, price)
 
-	_, ok = GetRunningHubH3GroupPrice("svip")
+	_, ok = GetRunningHubH3GroupPrice("missing")
 	assert.False(t, ok)
 }
 
+func TestRunningHubH3GroupPriceAllowsPlansOutsideGroupRatio(t *testing.T) {
+	require.NoError(t, ValidateRunningHubH3GroupPriceJSON(`{"private-plan":{"price_768p":0.04,"price_2k":0.3}}`))
+}
+
+func TestRunningHubH3GroupPriceUpdateNeverExposesEmptyMap(t *testing.T) {
+	original := RunningHubH3GroupPrice2JSONString()
+	t.Cleanup(func() {
+		require.NoError(t, UpdateRunningHubH3GroupPriceByJSONString(original))
+	})
+	require.NoError(t, UpdateRunningHubH3GroupPriceByJSONString(`{"old":{"price_768p":0.1,"price_2k":0.3}}`))
+
+	var observedEmpty atomic.Bool
+	var readers sync.WaitGroup
+	start := make(chan struct{})
+	for range 4 {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			<-start
+			for range 250 {
+				if len(GetRunningHubH3GroupPriceCopy()) == 0 {
+					observedEmpty.Store(true)
+					return
+				}
+			}
+		}()
+	}
+
+	close(start)
+	for range 100 {
+		require.NoError(t, UpdateRunningHubH3GroupPriceByJSONString(`{"new":{"price_768p":0.2,"price_2k":0.6}}`))
+		require.NoError(t, UpdateRunningHubH3GroupPriceByJSONString(`{"old":{"price_768p":0.1,"price_2k":0.3}}`))
+	}
+	readers.Wait()
+	require.False(t, observedEmpty.Load())
+}
+
 func TestRunningHubH3GroupPriceRejectsInvalidValues(t *testing.T) {
+	tooLongPlan := strings.Repeat("a", 65)
 	tests := []struct {
 		name  string
 		value string
 	}{
-		{name: "auto group", value: `{"auto":{"price_768p":0,"price_2k":0}}`},
-		{name: "unknown group", value: `{"missing":{"price_768p":0,"price_2k":0}}`},
+		{name: "reserved auto plan", value: `{"auto":{"price_768p":0,"price_2k":0}}`},
+		{name: "reserved none sentinel", value: `{"__none__":{"price_768p":0,"price_2k":0}}`},
+		{name: "empty plan", value: `{"":{"price_768p":0,"price_2k":0}}`},
+		{name: "whitespace plan", value: `{" private ":{"price_768p":0,"price_2k":0}}`},
+		{name: "plan name too long", value: `{"` + tooLongPlan + `":{"price_768p":0,"price_2k":0}}`},
 		{name: "missing 768p", value: `{"default":{"price_2k":0}}`},
 		{name: "missing 2k", value: `{"default":{"price_768p":0}}`},
 		{name: "negative 768p", value: `{"default":{"price_768p":-0.01,"price_2k":0}}`},

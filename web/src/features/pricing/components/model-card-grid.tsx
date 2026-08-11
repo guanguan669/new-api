@@ -38,6 +38,7 @@ export interface ModelCardGridProps {
   showRechargePrice?: boolean
   selectedGroup?: string
   runningHubH3GroupPrices?: Record<string, RunningHubH3GroupPrice>
+  h3PricingPlan?: string
 }
 
 export function ModelCardGrid(props: ModelCardGridProps) {
@@ -85,6 +86,7 @@ export function ModelCardGrid(props: ModelCardGridProps) {
             showRechargePrice={props.showRechargePrice}
             selectedGroup={props.selectedGroup}
             runningHubH3GroupPrices={props.runningHubH3GroupPrices}
+            h3PricingPlan={props.h3PricingPlan}
             perf={perfMap.get(model.model_name || '')}
             onClick={() => props.onModelClick(model.model_name || '')}
           />

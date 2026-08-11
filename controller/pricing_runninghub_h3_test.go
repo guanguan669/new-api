@@ -46,6 +46,38 @@ func TestFilterRunningHubH3GroupPricesForUserUsesAssignedGroupOutsideUsableGroup
 	}, prices)
 }
 
+func TestFilterRunningHubH3GroupPricesForUserUsesStandalonePlan(t *testing.T) {
+	original := ratio_setting.RunningHubH3GroupPrice2JSONString()
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateRunningHubH3GroupPriceByJSONString(original))
+	})
+	require.NoError(t, ratio_setting.UpdateRunningHubH3GroupPriceByJSONString(`{"private-user-plan":{"price_768p":0.04,"price_2k":0.3},"other-user-plan":{"price_768p":0.08,"price_2k":0.6}}`))
+
+	prices := filterRunningHubH3GroupPricesForUser(map[string]string{}, "private-user-plan")
+
+	assert.Equal(t, map[string]ratio_setting.RunningHubH3GroupPrice{
+		"private-user-plan": {Price768P: 0.04, Price2K: 0.3},
+	}, prices)
+	assert.NotContains(t, prices, "other-user-plan")
+}
+
+func TestResolveRunningHubH3PricingForUserReturnsAssignedPlanName(t *testing.T) {
+	original := ratio_setting.RunningHubH3GroupPrice2JSONString()
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateRunningHubH3GroupPriceByJSONString(original))
+	})
+	require.NoError(t, ratio_setting.UpdateRunningHubH3GroupPriceByJSONString(`{"private-user-plan":{"price_768p":0.04,"price_2k":0.3},"visible-group":{"price_768p":0.1,"price_2k":0.5}}`))
+
+	prices, assignedPlan := resolveRunningHubH3PricingForUser(map[string]string{
+		"visible-group": "Visible",
+	}, " private-user-plan ")
+
+	assert.Equal(t, "private-user-plan", assignedPlan)
+	assert.Equal(t, map[string]ratio_setting.RunningHubH3GroupPrice{
+		"private-user-plan": {Price768P: 0.04, Price2K: 0.3},
+	}, prices)
+}
+
 func TestFilterRunningHubH3GroupPricesForUserFallsBackWhenAssignmentRemoved(t *testing.T) {
 	original := ratio_setting.RunningHubH3GroupPrice2JSONString()
 	t.Cleanup(func() {
@@ -60,4 +92,10 @@ func TestFilterRunningHubH3GroupPricesForUserFallsBackWhenAssignmentRemoved(t *t
 	assert.Equal(t, map[string]ratio_setting.RunningHubH3GroupPrice{
 		"default": {Price768P: 0.1, Price2K: 0.3},
 	}, prices)
+
+	resolvedPrices, assignedPlan := resolveRunningHubH3PricingForUser(map[string]string{
+		"default": "Default",
+	}, "removed-plan")
+	assert.Empty(t, assignedPlan)
+	assert.Equal(t, prices, resolvedPrices)
 }

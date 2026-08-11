@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"strings"
+
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
@@ -56,14 +58,20 @@ func filterRunningHubH3GroupPricesByUsableGroups(usableGroup map[string]string) 
 // key or account group, so it does not need to be exposed through usableGroup.
 // A stale assignment falls back to the normal visible-group behavior.
 func filterRunningHubH3GroupPricesForUser(usableGroup map[string]string, priceGroup string) map[string]ratio_setting.RunningHubH3GroupPrice {
+	prices, _ := resolveRunningHubH3PricingForUser(usableGroup, priceGroup)
+	return prices
+}
+
+func resolveRunningHubH3PricingForUser(usableGroup map[string]string, priceGroup string) (map[string]ratio_setting.RunningHubH3GroupPrice, string) {
+	priceGroup = strings.TrimSpace(priceGroup)
 	if priceGroup != "" {
 		if price, ok := ratio_setting.GetRunningHubH3GroupPrice(priceGroup); ok {
 			return map[string]ratio_setting.RunningHubH3GroupPrice{
 				priceGroup: price,
-			}
+			}, priceGroup
 		}
 	}
-	return filterRunningHubH3GroupPricesByUsableGroups(usableGroup)
+	return filterRunningHubH3GroupPricesByUsableGroups(usableGroup), ""
 }
 
 func GetPricing(c *gin.Context) {
@@ -92,6 +100,7 @@ func GetPricing(c *gin.Context) {
 
 	usableGroup = service.GetUserUsableGroups(group)
 	pricing = filterPricingByUsableGroups(pricing, usableGroup)
+	runningHubH3Prices, h3PricingPlan := resolveRunningHubH3PricingForUser(usableGroup, runningHubH3PriceGroup)
 	// check groupRatio contains usableGroup
 	for group := range ratio_setting.GetGroupRatioCopy() {
 		if _, ok := usableGroup[group]; !ok {
@@ -107,7 +116,8 @@ func GetPricing(c *gin.Context) {
 		"usable_group":               usableGroup,
 		"supported_endpoint":         model.GetSupportedEndpointMap(),
 		"auto_groups":                service.GetUserAutoGroup(group),
-		"runninghub_h3_group_prices": filterRunningHubH3GroupPricesForUser(usableGroup, runningHubH3PriceGroup),
+		"runninghub_h3_group_prices": runningHubH3Prices,
+		"h3_pricing_plan":            h3PricingPlan,
 		"pricing_version":            "a42d372ccf0b5dd13ecf71203521f9d2",
 	})
 }

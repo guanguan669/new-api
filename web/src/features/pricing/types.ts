@@ -103,6 +103,7 @@ export type PricingData = {
   supported_endpoint: Record<string, string>
   auto_groups: string[]
   runninghub_h3_group_prices?: Record<string, RunningHubH3GroupPrice>
+  h3_pricing_plan?: string
 }
 
 export type TokenUnit = 'M' | 'K'

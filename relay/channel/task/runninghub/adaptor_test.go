@@ -637,6 +637,28 @@ func TestOverridePriceDataEmptyUserSettingH3PriceGroupFallsBackToUsingGroup(t *t
 	assert.Equal(t, expectedH3Quota(t, (0.10*5)/7.3), priceData.Quota)
 }
 
+func TestOverridePriceDataStaleUserSettingH3PriceGroupFallsBackToUsingGroup(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	withRunningHubH3GroupPrices(t, map[string]h3GroupPrice{
+		"using-group": {Price768P: 0.10, Price2K: 0.30},
+	})
+	withUSDExchangeRate(t, 7.3)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+	ctx.Set("task_request", relaycommon.TaskSubmitReq{Seconds: "5"})
+
+	priceData, ok, err := (&TaskAdaptor{}).OverridePriceData(ctx, &relaycommon.RelayInfo{
+		OriginModelName: modelName,
+		UsingGroup:      "using-group",
+		UserSetting:     dto.UserSetting{RunningHubH3PriceGroup: "deleted-plan"},
+	})
+
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.InDelta(t, 0.10/7.3, priceData.ModelPrice, 0.000001)
+	assert.Equal(t, expectedH3Quota(t, (0.10*5)/7.3), priceData.Quota)
+}
+
 func TestOverridePriceDataFallsBackWhenGroupUnconfiguredOrModelDiffers(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	withRunningHubH3GroupPrice(t, "h3-vip", h3GroupPrice{Price768P: 0.10, Price2K: 0.30})

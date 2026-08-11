@@ -27,6 +27,7 @@ type RunningHubH3PricingProps = {
   model: PricingModel
   groupPrices?: Record<string, RunningHubH3GroupPrice>
   selectedGroup?: string
+  pricingPlan?: string
 }
 
 export function RunningHubH3Pricing(props: RunningHubH3PricingProps) {
@@ -34,7 +35,8 @@ export function RunningHubH3Pricing(props: RunningHubH3PricingProps) {
   const prices = getRunningHubH3DisplayPrices(
     props.model,
     props.groupPrices,
-    props.selectedGroup
+    props.selectedGroup,
+    props.pricingPlan
   )
 
   return (

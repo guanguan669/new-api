@@ -130,7 +130,7 @@ export function UsersMutateDrawer({
     staleTime: 5 * 60 * 1000,
   })
 
-  const h3PriceGroups = h3PriceGroupsData?.data || []
+  const h3PricingPlans = h3PriceGroupsData?.data || []
 
   // Permission catalog is owned by the backend; fetched once and reused.
   const { data: permissionCatalog = EMPTY_PERMISSION_CATALOG } = useQuery({
@@ -168,12 +168,12 @@ export function UsersMutateDrawer({
   const canEditAdminPermissions = currentUser?.role === ROLE.SUPER_ADMIN
   const targetIsAdmin = (selectedRole ?? currentRow?.role ?? 0) >= ROLE.ADMIN
 
-  const formatH3PriceGroupLabel = (
-    group: string,
+  const formatH3PricingPlanLabel = (
+    plan: string,
     price768p: number,
     price2k: number
   ) =>
-    `${group} (${t('768p')}: ${price768p} CNY/sec, ${t('2K')}: ${price2k} CNY/sec)`
+    `${plan} (${t('768p')}: ${price768p} CNY/sec, ${t('2K')}: ${price2k} CNY/sec)`
 
   const onSubmit = async (data: UserFormValues) => {
     if (!isUpdate) {
@@ -198,7 +198,12 @@ export function UsersMutateDrawer({
         ? await updateUser(payload as typeof payload & { id: number })
         : await createUser(payload)
 
-      if (result.success && isUpdate && currentRow) {
+      if (
+        result.success &&
+        isUpdate &&
+        currentRow &&
+        form.formState.dirtyFields.h3_price_group
+      ) {
         const h3Result = await updateUserH3PriceGroup(
           currentRow.id,
           data.h3_price_group || ''
@@ -423,19 +428,19 @@ export function UsersMutateDrawer({
                     name='h3_price_group'
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>{t('H3 pricing group')}</FormLabel>
+                        <FormLabel>{t('H3 pricing plan')}</FormLabel>
                         <Select
                           items={[
                             {
                               value: H3_PRICE_GROUP_NONE_VALUE,
-                              label: t('No H3 pricing group'),
+                              label: t('No H3 pricing plan'),
                             },
-                            ...h3PriceGroups.map((priceGroup) => ({
-                              value: priceGroup.group,
-                              label: formatH3PriceGroupLabel(
-                                priceGroup.group,
-                                priceGroup.price_768p,
-                                priceGroup.price_2k
+                            ...h3PricingPlans.map((pricingPlan) => ({
+                              value: pricingPlan.group,
+                              label: formatH3PricingPlanLabel(
+                                pricingPlan.group,
+                                pricingPlan.price_768p,
+                                pricingPlan.price_2k
                               ),
                             })),
                           ]}
@@ -449,24 +454,24 @@ export function UsersMutateDrawer({
                           <FormControl>
                             <SelectTrigger className='w-full'>
                               <SelectValue
-                                placeholder={t('Select an H3 pricing group')}
+                                placeholder={t('Select an H3 pricing plan')}
                               />
                             </SelectTrigger>
                           </FormControl>
                           <SelectContent alignItemWithTrigger={false}>
                             <SelectGroup>
                               <SelectItem value={H3_PRICE_GROUP_NONE_VALUE}>
-                                {t('No H3 pricing group')}
+                                {t('No H3 pricing plan')}
                               </SelectItem>
-                              {h3PriceGroups.map((priceGroup) => (
+                              {h3PricingPlans.map((pricingPlan) => (
                                 <SelectItem
-                                  key={priceGroup.group}
-                                  value={priceGroup.group}
+                                  key={pricingPlan.group}
+                                  value={pricingPlan.group}
                                 >
-                                  {formatH3PriceGroupLabel(
-                                    priceGroup.group,
-                                    priceGroup.price_768p,
-                                    priceGroup.price_2k
+                                  {formatH3PricingPlanLabel(
+                                    pricingPlan.group,
+                                    pricingPlan.price_768p,
+                                    pricingPlan.price_2k
                                   )}
                                 </SelectItem>
                               ))}
@@ -475,7 +480,7 @@ export function UsersMutateDrawer({
                         </Select>
                         <FormDescription>
                           {t(
-                            'Optional RunningHub H3 pricing override for this user.'
+                            'Optional H3 pricing plan assigned only to this user.'
                           )}
                         </FormDescription>
                         <FormMessage />

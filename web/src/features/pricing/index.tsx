@@ -50,6 +50,7 @@ export function Pricing() {
     endpointMap,
     autoGroups,
     runningHubH3GroupPrices,
+    h3PricingPlan,
     isLoading,
     priceRate,
     usdExchangeRate,
@@ -133,6 +134,7 @@ export function Pricing() {
           showRechargePrice={showRechargePrice}
           selectedGroup={groupFilter}
           runningHubH3GroupPrices={runningHubH3GroupPrices}
+          h3PricingPlan={h3PricingPlan}
         />
       )
     }
@@ -146,6 +148,7 @@ export function Pricing() {
         showRechargePrice={showRechargePrice}
         selectedGroup={groupFilter}
         runningHubH3GroupPrices={runningHubH3GroupPrices}
+        h3PricingPlan={h3PricingPlan}
         onModelClick={handleModelClick}
       />
     )
@@ -285,6 +288,7 @@ export function Pricing() {
               showRechargePrice={showRechargePrice}
               selectedGroup={groupFilter}
               runningHubH3GroupPrices={runningHubH3GroupPrices}
+              h3PricingPlan={h3PricingPlan}
             />
           )}
         </PageTransition>

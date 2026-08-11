@@ -380,7 +380,6 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
       />
 
       <RunningHubH3GroupPriceEditor
-        groupRatio={groupRatio}
         value={runningHubH3GroupPrice}
         onChange={onChange}
       />
@@ -723,40 +722,28 @@ function GroupPricingTable({
 }
 
 type RunningHubH3GroupPriceEditorProps = {
-  groupRatio: string
   value: string
   onChange: (field: string, value: string) => void
 }
 
 function RunningHubH3GroupPriceEditor({
-  groupRatio,
   value,
   onChange,
 }: RunningHubH3GroupPriceEditorProps) {
   const { t } = useTranslation()
-  const [selectedGroup, setSelectedGroup] = useState<string | null>(null)
+  const [newPlanName, setNewPlanName] = useState('')
 
   const priceMap = useMemo(() => parseRunningHubH3GroupPriceMap(value), [value])
-  const eligibleGroups = useMemo(() => {
-    const ratioMap = parseRatioMap(groupRatio)
-    return Object.keys(ratioMap).filter((group) => group !== 'auto')
-  }, [groupRatio])
-  const eligibleGroupSet = useMemo(
-    () => new Set(eligibleGroups),
-    [eligibleGroups]
-  )
+  const normalizedPlanName = newPlanName.trim()
+  const planNameExists = Object.hasOwn(priceMap, normalizedPlanName)
+  const planNameReserved = ['auto', '__none__'].includes(normalizedPlanName)
   const rows = useMemo(
     () =>
-      Object.entries(priceMap).map(([group, price]) => ({
-        group,
+      Object.entries(priceMap).map(([plan, price]) => ({
+        plan,
         ...price,
-        eligible: eligibleGroupSet.has(group),
       })),
-    [eligibleGroupSet, priceMap]
-  )
-  const candidates = useMemo(
-    () => eligibleGroups.filter((group) => !Object.hasOwn(priceMap, group)),
-    [eligibleGroups, priceMap]
+    [priceMap]
   )
   const invalidRows = rows.filter(
     (row) =>
@@ -765,8 +752,6 @@ function RunningHubH3GroupPriceEditor({
       !Number.isFinite(row.price_768p) ||
       !Number.isFinite(row.price_2k)
   )
-  const staleRows = rows.filter((row) => !row.eligible)
-
   const emitMap = useCallback(
     (nextMap: Record<string, RunningHubH3GroupPrice>) => {
       onChange(
@@ -777,21 +762,21 @@ function RunningHubH3GroupPriceEditor({
     [onChange]
   )
 
-  const addGroup = useCallback(() => {
-    if (!selectedGroup) return
+  const addPlan = useCallback(() => {
+    if (!normalizedPlanName || planNameExists || planNameReserved) return
     emitMap({
       ...priceMap,
-      [selectedGroup]: { price_768p: 0.1, price_2k: 0.3 },
+      [normalizedPlanName]: { price_768p: 0.1, price_2k: 0.3 },
     })
-    setSelectedGroup(null)
-  }, [emitMap, priceMap, selectedGroup])
+    setNewPlanName('')
+  }, [emitMap, normalizedPlanName, planNameExists, planNameReserved, priceMap])
 
   const updatePrice = useCallback(
-    (group: string, field: keyof RunningHubH3GroupPrice, price: number) => {
+    (plan: string, field: keyof RunningHubH3GroupPrice, price: number) => {
       emitMap({
         ...priceMap,
-        [group]: {
-          ...priceMap[group],
+        [plan]: {
+          ...priceMap[plan],
           [field]: price,
         },
       })
@@ -799,10 +784,10 @@ function RunningHubH3GroupPriceEditor({
     [emitMap, priceMap]
   )
 
-  const removeGroup = useCallback(
-    (group: string) => {
+  const removePlan = useCallback(
+    (plan: string) => {
       const nextMap = { ...priceMap }
-      delete nextMap[group]
+      delete nextMap[plan]
       emitMap(nextMap)
     },
     [emitMap, priceMap]
@@ -813,29 +798,39 @@ function RunningHubH3GroupPriceEditor({
       <CardHeader className={sectionHeaderClassName}>
         <div className='flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between'>
           <div>
-            <CardTitle>{t('H3 group prices')}</CardTitle>
+            <CardTitle>{t('H3 pricing plans')}</CardTitle>
             <CardDescription>
               {t(
-                'Optional CNY per second prices for H3. Prices apply only to existing non-auto pricing groups.'
+                'Create reusable H3 pricing plans in CNY per second, then assign one plan to each user as needed.'
               )}
             </CardDescription>
           </div>
           <div className='flex flex-wrap gap-2 sm:justify-end'>
-            <GroupNameSelect
-              options={candidates}
-              value={selectedGroup}
-              placeholder={t('Choose eligible group')}
-              onValueChange={setSelectedGroup}
+            <Input
+              value={newPlanName}
+              placeholder={t('Pricing plan name')}
+              aria-label={t('Pricing plan name')}
+              aria-invalid={planNameExists || planNameReserved}
+              maxLength={64}
+              onChange={(event) => setNewPlanName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  addPlan()
+                }
+              }}
               className='w-52'
             />
             <Button
               type='button'
               size='sm'
-              onClick={addGroup}
-              disabled={!selectedGroup}
+              onClick={addPlan}
+              disabled={
+                !normalizedPlanName || planNameExists || planNameReserved
+              }
             >
               <Plus className='mr-2 h-4 w-4' />
-              {t('Add H3 price')}
+              {t('Add pricing plan')}
             </Button>
           </div>
         </div>
@@ -844,20 +839,15 @@ function RunningHubH3GroupPriceEditor({
         <div className='space-y-3'>
           <StaticDataTable
             data={rows}
-            getRowKey={(row) => row.group}
+            getRowKey={(row) => row.plan}
             emptyClassName='text-muted-foreground h-20 text-sm'
-            emptyContent={t('No H3 group prices configured.')}
+            emptyContent={t('No H3 pricing plans configured.')}
             columns={[
               {
-                id: 'group',
-                header: t('Group'),
+                id: 'plan',
+                header: t('Pricing plan'),
                 className: 'min-w-40',
-                cell: (row) => (
-                  <div className='flex items-center gap-2'>
-                    <span className='font-medium'>{row.group}</span>
-                    {!row.eligible && <UnknownGroupBadge />}
-                  </div>
-                ),
+                cell: (row) => <span className='font-medium'>{row.plan}</span>,
               },
               {
                 id: 'price-768p',
@@ -869,13 +859,13 @@ function RunningHubH3GroupPriceEditor({
                     min={0}
                     step={0.01}
                     value={row.price_768p}
-                    aria-label={t('768P / 1MP (CNY/sec): {{group}}', {
-                      group: row.group,
+                    aria-label={t('768P / 1MP (CNY/sec): {{plan}}', {
+                      plan: row.plan,
                     })}
                     aria-invalid={row.price_768p < 0}
                     onChange={(event) =>
                       updatePrice(
-                        row.group,
+                        row.plan,
                         'price_768p',
                         Number(event.target.value)
                       )
@@ -893,13 +883,13 @@ function RunningHubH3GroupPriceEditor({
                     min={0}
                     step={0.01}
                     value={row.price_2k}
-                    aria-label={t('2K / 2MP (CNY/sec): {{group}}', {
-                      group: row.group,
+                    aria-label={t('2K / 2MP (CNY/sec): {{plan}}', {
+                      plan: row.plan,
                     })}
                     aria-invalid={row.price_2k < 0}
                     onChange={(event) =>
                       updatePrice(
-                        row.group,
+                        row.plan,
                         'price_2k',
                         Number(event.target.value)
                       )
@@ -916,8 +906,8 @@ function RunningHubH3GroupPriceEditor({
                   <Button
                     variant='ghost'
                     size='sm'
-                    onClick={() => removeGroup(row.group)}
-                    aria-label={t('Remove H3 price')}
+                    onClick={() => removePlan(row.plan)}
+                    aria-label={t('Remove H3 pricing plan')}
                   >
                     <Trash2 className='h-4 w-4' />
                   </Button>
@@ -926,25 +916,20 @@ function RunningHubH3GroupPriceEditor({
             ]}
           />
 
-          {eligibleGroups.length === 0 && (
-            <p className='text-muted-foreground text-sm'>
-              {t('Add at least one non-auto pricing group first.')}
+          {planNameExists && (
+            <p className='text-destructive text-sm'>
+              {t('An H3 pricing plan with this name already exists.')}
+            </p>
+          )}
+          {planNameReserved && (
+            <p className='text-destructive text-sm'>
+              {t('This H3 pricing plan name is reserved.')}
             </p>
           )}
           {invalidRows.length > 0 && (
             <p className='text-destructive text-sm'>
               {t(
-                'H3 group prices must be zero or greater. Use 0 for free H3 generation.'
-              )}
-            </p>
-          )}
-          {staleRows.length > 0 && (
-            <p className='text-destructive text-sm'>
-              {t(
-                'Remove H3 price profiles for groups that are missing from group ratios or are auto: {{groups}}',
-                {
-                  groups: staleRows.map((row) => row.group).join(', '),
-                }
+                'H3 pricing plan prices must be zero or greater. Use 0 for free H3 generation.'
               )}
             </p>
           )}

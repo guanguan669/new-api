@@ -1138,6 +1138,7 @@ export interface ModelDetailsContentProps {
   autoGroups: string[]
   selectedGroup?: string
   runningHubH3GroupPrices?: Record<string, RunningHubH3GroupPrice>
+  h3PricingPlan?: string
   priceRate: number
   usdExchangeRate: number
   tokenUnit: TokenUnit
@@ -1184,6 +1185,7 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
                 model={props.model}
                 groupPrices={props.runningHubH3GroupPrices}
                 selectedGroup={props.selectedGroup}
+                pricingPlan={props.h3PricingPlan}
               />
             ) : (
               <>
@@ -1276,6 +1278,8 @@ export function ModelDetails() {
     usableGroup,
     endpointMap,
     autoGroups,
+    runningHubH3GroupPrices,
+    h3PricingPlan,
     isLoading,
     priceRate,
     usdExchangeRate,
@@ -1354,6 +1358,8 @@ export function ModelDetails() {
           groupRatio={groupRatio || {}}
           usableGroup={usableGroup || {}}
           autoGroups={autoGroups || []}
+          runningHubH3GroupPrices={runningHubH3GroupPrices}
+          h3PricingPlan={h3PricingPlan}
           priceRate={priceRate ?? 1}
           usdExchangeRate={usdExchangeRate ?? 1}
           tokenUnit={tokenUnit}
