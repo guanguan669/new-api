@@ -149,6 +149,24 @@ func TestRunningHubH3PriceGroupRemovalUsesMySQLCurrentRead(t *testing.T) {
 	assert.Contains(t, strings.ToUpper(statement.SQL.String()), "FOR UPDATE")
 }
 
+func TestLockRunningHubH3PriceGroupsAppliesLegacySameNameBinding(t *testing.T) {
+	truncateTables(t)
+	require.NoError(t, DB.AutoMigrate(&Option{}))
+	originalGroups := ratio_setting.GroupRatio2JSONString()
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(originalGroups))
+	})
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"route-pro":1}`))
+	require.NoError(t, DB.Create(&Option{
+		Key:   ratio_setting.RunningHubH3GroupPriceOptionKey,
+		Value: `{"route-pro":{"price_768p":0.3,"price_2k":0.4}}`,
+	}).Error)
+
+	configured, err := lockRunningHubH3PriceGroups(DB)
+	require.NoError(t, err)
+	assert.Equal(t, "route-pro", configured["route-pro"].BoundGroup)
+}
+
 func TestValidateOptionValueValidatesNamespacedRunningHubH3Prices(t *testing.T) {
 	assert.NoError(t, validateOptionValue("group_ratio_setting.runninghub_h3_group_price", `{"private-plan":{"price_768p":0,"price_2k":0}}`))
 	assert.Error(t, validateOptionValue("group_ratio_setting.runninghub_h3_group_price", `{" private ":{"price_768p":0,"price_2k":0}}`))

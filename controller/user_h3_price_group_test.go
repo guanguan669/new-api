@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
@@ -45,9 +46,21 @@ func setupH3PriceGroupTest(t *testing.T) *gorm.DB {
 	common.OptionMap = make(map[string]string)
 	common.OptionMapRWMutex.Unlock()
 	originalPrices := ratio_setting.RunningHubH3GroupPrice2JSONString()
+	originalUsableGroups := setting.UserUsableGroups2JSONString()
+	originalSpecialGroups := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup.ReadAll()
 	common.RedisEnabled = false
 	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
-	configuredPrices := `{"basic":{"price_768p":0.1,"price_2k":0.2},"pro":{"price_768p":0.3,"price_2k":0.4}}`
+	configuredPrices := `{"basic":{"group":"route-basic","price_768p":0.1,"price_2k":0.2},"pro":{"group":"route-pro","price_768p":0.3,"price_2k":0.4}}`
+	originalGroups := ratio_setting.GroupRatio2JSONString()
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"route-basic":1,"route-pro":1,"routing-premium":1,"shared-route":1}`))
+	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"route-basic":"Basic route"}`))
+	specialGroups := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup
+	specialGroups.Clear()
+	specialGroups.Set("route-basic", map[string]string{"+:route-pro": "Pro route"})
+	specialGroups.Set("shared-route", map[string]string{
+		"+:route-basic": "Basic route",
+		"+:route-pro":   "Pro route",
+	})
 	require.NoError(t, ratio_setting.UpdateRunningHubH3GroupPriceByJSONString(configuredPrices))
 
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))
@@ -71,6 +84,10 @@ func setupH3PriceGroupTest(t *testing.T) *gorm.DB {
 		common.OptionMap = previousOptionMap
 		common.OptionMapRWMutex.Unlock()
 		require.NoError(t, ratio_setting.UpdateRunningHubH3GroupPriceByJSONString(originalPrices))
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(originalGroups))
+		require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(originalUsableGroups))
+		specialGroups.Clear()
+		specialGroups.AddAll(originalSpecialGroups)
 		sqlDB, dbErr := db.DB()
 		if dbErr == nil {
 			_ = sqlDB.Close()
@@ -112,9 +129,9 @@ func performH3Request(t *testing.T, method, target, body string, role int, handl
 
 func TestGetRunningHubH3PriceGroupsCountsAssignedNonDeletedUsers(t *testing.T) {
 	db := setupH3PriceGroupTest(t)
-	createH3TestUser(t, db, "active-basic", common.RoleCommonUser, common.UserStatusEnabled, "route-a", "basic")
-	createH3TestUser(t, db, "disabled-basic", common.RoleCommonUser, common.UserStatusDisabled, "route-b", "basic")
-	createH3TestUser(t, db, "admin-basic-count", common.RoleAdminUser, common.UserStatusEnabled, "route-admin", "basic")
+	createH3TestUser(t, db, "active-basic", common.RoleCommonUser, common.UserStatusEnabled, "route-basic", "basic")
+	createH3TestUser(t, db, "disabled-basic", common.RoleCommonUser, common.UserStatusDisabled, "route-basic", "basic")
+	createH3TestUser(t, db, "admin-basic-count", common.RoleAdminUser, common.UserStatusEnabled, "route-basic", "basic")
 	deleted := createH3TestUser(t, db, "deleted-pro", common.RoleCommonUser, common.UserStatusEnabled, "route-c", "pro")
 	require.NoError(t, db.Delete(&deleted).Error)
 	createH3TestUser(t, db, "active-pro", common.RoleCommonUser, common.UserStatusEnabled, "route-d", "pro")
@@ -132,6 +149,7 @@ func TestGetRunningHubH3PriceGroupsCountsAssignedNonDeletedUsers(t *testing.T) {
 	require.True(t, response.Success)
 	require.Len(t, response.Data, 2)
 	assert.Equal(t, "basic", response.Data[0].Group)
+	assert.Equal(t, "route-basic", response.Data[0].BoundGroup)
 	assert.Equal(t, 3, response.Data[0].UserCount)
 	assert.Equal(t, "pro", response.Data[1].Group)
 	assert.Equal(t, 1, response.Data[1].UserCount)
@@ -188,6 +206,11 @@ func TestGetRunningHubH3PriceGroupUsersFiltersPaginatesAndEnforcesRole(t *testin
 	response = performH3Request(t, http.MethodGet, "/api/user/h3-price-groups/basic/users?scope=available&keyword=admin-basic", "", common.RoleAdminUser, GetRunningHubH3PriceGroupUsers)
 	require.NoError(t, json.Unmarshal(response.Data, &page))
 	assert.Zero(t, page.Total)
+
+	createH3TestUser(t, db, "unavailable-pro", common.RoleCommonUser, common.UserStatusEnabled, "isolated-route", "")
+	response = performH3Request(t, http.MethodGet, "/api/user/h3-price-groups/pro/users?scope=available&keyword=unavailable-pro", "", common.RoleRootUser, GetRunningHubH3PriceGroupUsers)
+	require.NoError(t, json.Unmarshal(response.Data, &page))
+	assert.Zero(t, page.Total)
 }
 
 func TestGetRunningHubH3PriceGroupUsersRejectsUnknownTier(t *testing.T) {
@@ -207,7 +230,7 @@ func TestUpdateUserRunningHubH3PriceGroupPreservesRoutingGroupAndSettings(t *tes
 	db := setupH3PriceGroupTest(t)
 	user := model.User{
 		Username: "assigned-user", Password: "password", Role: common.RoleCommonUser,
-		Status: common.UserStatusEnabled, Group: "routing-premium", AffCode: "aff-assigned-user",
+		Status: common.UserStatusEnabled, Group: "route-pro", AffCode: "aff-assigned-user",
 	}
 	user.SetSetting(dto.UserSetting{Language: "en", BillingPreference: "wallet", RunningHubH3PriceGroup: "basic"})
 	require.NoError(t, db.Create(&user).Error)
@@ -228,11 +251,54 @@ func TestUpdateUserRunningHubH3PriceGroupPreservesRoutingGroupAndSettings(t *tes
 
 	var updated model.User
 	require.NoError(t, db.First(&updated, user.Id).Error)
-	assert.Equal(t, "routing-premium", updated.Group)
+	assert.Equal(t, "route-pro", updated.Group)
 	setting := updated.GetSetting()
 	assert.Equal(t, "pro", setting.RunningHubH3PriceGroup)
 	assert.Equal(t, "en", setting.Language)
 	assert.Equal(t, "wallet", setting.BillingPreference)
+}
+
+func TestUpdateUserRunningHubH3PriceGroupAllowsUsableDifferentAccountGroup(t *testing.T) {
+	db := setupH3PriceGroupTest(t)
+	user := createH3TestUser(t, db, "mismatched-user", common.RoleCommonUser, common.UserStatusEnabled, "route-basic", "")
+
+	response := performH3AssignmentRequest(t, user.Id, `{"group":"pro"}`)
+
+	assert.True(t, response.Success)
+	var updated model.User
+	require.NoError(t, db.First(&updated, user.Id).Error)
+	assert.Equal(t, "route-basic", updated.Group)
+	assert.Equal(t, "pro", updated.GetSetting().RunningHubH3PriceGroup)
+}
+
+func TestUpdateUserRunningHubH3PriceGroupRejectsUnavailableBoundGroup(t *testing.T) {
+	db := setupH3PriceGroupTest(t)
+	user := createH3TestUser(t, db, "unreachable-user", common.RoleCommonUser, common.UserStatusEnabled, "isolated-route", "")
+
+	response := performH3AssignmentRequest(t, user.Id, `{"group":"pro"}`)
+
+	assert.False(t, response.Success)
+	assert.Contains(t, response.Message, "requires unavailable normal group route-pro")
+	var updated model.User
+	require.NoError(t, db.First(&updated, user.Id).Error)
+	assert.Equal(t, "isolated-route", updated.Group)
+	assert.Empty(t, updated.GetSetting().RunningHubH3PriceGroup)
+}
+
+func TestUpdateUserRunningHubH3PriceGroupEnforcesLegacySameNameBindingInsideLock(t *testing.T) {
+	db := setupH3PriceGroupTest(t)
+	require.NoError(t, db.Model(&model.Option{}).
+		Where("key = ?", ratio_setting.RunningHubH3GroupPriceOptionKey).
+		Update("value", `{"route-pro":{"price_768p":0.3,"price_2k":0.4}}`).Error)
+	user := createH3TestUser(t, db, "legacy-binding-user", common.RoleCommonUser, common.UserStatusEnabled, "isolated-route", "")
+
+	response := performH3AssignmentRequest(t, user.Id, `{"group":"route-pro"}`)
+
+	assert.False(t, response.Success)
+	assert.Contains(t, response.Message, "requires unavailable normal group route-pro")
+	var updated model.User
+	require.NoError(t, db.First(&updated, user.Id).Error)
+	assert.Empty(t, updated.GetSetting().RunningHubH3PriceGroup)
 }
 
 func TestOrdinaryUserSettingsKeepRunningHubH3PriceTier(t *testing.T) {

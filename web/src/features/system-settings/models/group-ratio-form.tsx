@@ -351,7 +351,7 @@ export const GroupRatioForm = memo(function GroupRatioForm({
               name='RunningHubH3GroupPrice'
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>{t('H3 group prices')}</FormLabel>
+                  <FormLabel>{t('H3 pricing tiers')}</FormLabel>
                   <FormControl>
                     <JsonCodeEditor
                       value={field.value}
@@ -364,9 +364,10 @@ export const GroupRatioForm = memo(function GroupRatioForm({
                   </FormControl>
                   <FormDescription>
                     {t(
-                      'JSON map of group to H3 CNY per second prices, such as'
+                      'JSON map of pricing tier to H3 CNY per second prices and its bound normal group, such as'
                     )}{' '}
-                    {`{ "vip": { "price_768p": 0.1, "price_2k": 0.3 } }`}.
+                    {`{ "vip-tier": { "price_768p": 0.1, "price_2k": 0.3, "group": "vip" } }`}
+                    .
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

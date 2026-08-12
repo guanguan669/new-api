@@ -36,10 +36,11 @@ type LoginRequest struct {
 }
 
 type runningHubH3PriceGroupItem struct {
-	Group     string  `json:"group"`
-	Price768P float64 `json:"price_768p"`
-	Price2K   float64 `json:"price_2k"`
-	UserCount int     `json:"user_count"`
+	Group      string  `json:"group"`
+	BoundGroup string  `json:"bound_group"`
+	Price768P  float64 `json:"price_768p"`
+	Price2K    float64 `json:"price_2k"`
+	UserCount  int     `json:"user_count"`
 }
 
 type runningHubH3PriceGroupUserItem struct {
@@ -795,10 +796,11 @@ func GetRunningHubH3PriceGroups(c *gin.Context) {
 	groups := make([]runningHubH3PriceGroupItem, 0, len(configured))
 	for group, price := range configured {
 		groups = append(groups, runningHubH3PriceGroupItem{
-			Group:     group,
-			Price768P: price.Price768P,
-			Price2K:   price.Price2K,
-			UserCount: userCounts[group],
+			Group:      group,
+			BoundGroup: price.BoundGroup,
+			Price768P:  price.Price768P,
+			Price2K:    price.Price2K,
+			UserCount:  userCounts[group],
 		})
 	}
 	sort.Slice(groups, func(i, j int) bool {
@@ -813,10 +815,12 @@ func GetRunningHubH3PriceGroups(c *gin.Context) {
 
 func GetRunningHubH3PriceGroupUsers(c *gin.Context) {
 	priceGroup := strings.TrimSpace(c.Param("group"))
-	if _, ok := ratio_setting.GetRunningHubH3GroupPrice(priceGroup); !ok {
+	price, ok := ratio_setting.GetRunningHubH3GroupPrice(priceGroup)
+	if !ok {
 		common.ApiError(c, fmt.Errorf("runninghub h3 price group is not configured: %s", priceGroup))
 		return
 	}
+	boundGroup := strings.TrimSpace(price.BoundGroup)
 	scope := strings.ToLower(strings.TrimSpace(c.DefaultQuery("scope", "assigned")))
 	if scope != "assigned" && scope != "available" && scope != "all" {
 		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
@@ -853,6 +857,9 @@ func GetRunningHubH3PriceGroupUsers(c *gin.Context) {
 		}
 		isAssigned := setting.RunningHubH3PriceGroup == priceGroup
 		if (scope == "assigned" && !isAssigned) || (scope == "available" && isAssigned) {
+			continue
+		}
+		if scope == "available" && boundGroup != "" && !service.GroupInUserUsableGroups(user.Group, boundGroup) {
 			continue
 		}
 		if !matchesRunningHubH3UserKeyword(user, keyword) {
@@ -919,19 +926,22 @@ func UpdateUserRunningHubH3PriceGroup(c *gin.Context) {
 	actorRole := c.GetInt("role")
 	var user model.User
 	err = model.WithRunningHubH3PriceGroupOptionLock(func(tx *gorm.DB, configured map[string]ratio_setting.RunningHubH3GroupPrice) error {
-		if priceGroup != "" {
-			if _, ok := configured[priceGroup]; !ok {
-				return fmt.Errorf("runninghub h3 price group is not configured: %s", priceGroup)
-			}
-		}
-
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Select("id", "username", "role", "setting").
+			Select("id", "username", "role", "group", "setting").
 			First(&user, "id = ?", id).Error; err != nil {
 			return err
 		}
 		if !canManageTargetRole(actorRole, user.Role) {
 			return permissionErr
+		}
+		if priceGroup != "" {
+			price, ok := configured[priceGroup]
+			if !ok {
+				return fmt.Errorf("runninghub h3 price group is not configured: %s", priceGroup)
+			}
+			if boundGroup := strings.TrimSpace(price.BoundGroup); boundGroup != "" && !service.GroupInUserUsableGroups(user.Group, boundGroup) {
+				return fmt.Errorf("runninghub h3 price group %s requires unavailable normal group %s", priceGroup, boundGroup)
+			}
 		}
 
 		userSetting := dto.UserSetting{}

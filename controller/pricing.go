@@ -46,7 +46,11 @@ func filterRunningHubH3GroupPricesByUsableGroups(usableGroup map[string]string) 
 
 	prices := make(map[string]ratio_setting.RunningHubH3GroupPrice, len(configuredPrices))
 	for group, price := range configuredPrices {
-		if _, ok := usableGroup[group]; ok {
+		boundGroup := strings.TrimSpace(price.BoundGroup)
+		if boundGroup == "" {
+			continue
+		}
+		if _, ok := usableGroup[boundGroup]; ok {
 			prices[group] = price
 		}
 	}
@@ -65,13 +69,18 @@ func filterRunningHubH3GroupPricesForUser(usableGroup map[string]string, priceGr
 func resolveRunningHubH3PricingForUser(usableGroup map[string]string, priceGroup string) (map[string]ratio_setting.RunningHubH3GroupPrice, string) {
 	priceGroup = strings.TrimSpace(priceGroup)
 	if priceGroup != "" {
-		if price, ok := ratio_setting.GetRunningHubH3GroupPrice(priceGroup); ok {
+		if price, ok := ratio_setting.GetRunningHubH3GroupPrice(priceGroup); ok && (strings.TrimSpace(price.BoundGroup) == "" || hasUsableBoundGroup(usableGroup, price.BoundGroup)) {
 			return map[string]ratio_setting.RunningHubH3GroupPrice{
 				priceGroup: price,
 			}, priceGroup
 		}
 	}
 	return filterRunningHubH3GroupPricesByUsableGroups(usableGroup), ""
+}
+
+func hasUsableBoundGroup(usableGroup map[string]string, boundGroup string) bool {
+	_, ok := usableGroup[strings.TrimSpace(boundGroup)]
+	return ok
 }
 
 func GetPricing(c *gin.Context) {

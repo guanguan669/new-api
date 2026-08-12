@@ -46,7 +46,12 @@ for (const key of domGlobals) {
   })
 }
 
-const { act, useState } = await import('react')
+const React = await import('react')
+const { act, useState } = React
+Object.defineProperty(globalThis, 'React', {
+  configurable: true,
+  value: React,
+})
 const { createRoot } = await import('react-dom/client')
 const { QueryClient, QueryClientProvider } =
   await import('@tanstack/react-query')
@@ -106,6 +111,7 @@ describe('H3 pricing tier editor', () => {
       return (
         <RunningHubH3GroupPriceEditor
           value={value}
+          groupOptions={['default', 'vip']}
           onChange={(_, nextValue) => {
             latestValue = nextValue
             setValue(nextValue)
@@ -131,10 +137,15 @@ describe('H3 pricing tier editor', () => {
     assert.equal(addButton.disabled, false)
 
     await act(async () => addButton.click())
-    assert.deepEqual(Object.keys(JSON.parse(latestValue)), ['tier_1'])
+    assert.deepEqual(JSON.parse(latestValue), {
+      tier_1: { price_768p: 0.1, price_2k: 0.3, group: 'default' },
+    })
 
     await act(async () => addButton.click())
-    assert.deepEqual(Object.keys(JSON.parse(latestValue)), ['tier_1', 'tier_2'])
+    assert.deepEqual(JSON.parse(latestValue), {
+      tier_1: { price_768p: 0.1, price_2k: 0.3, group: 'default' },
+      tier_2: { price_768p: 0.1, price_2k: 0.3, group: 'default' },
+    })
 
     const nameInput = container.querySelector<HTMLInputElement>(
       'input[aria-label="Pricing tier name (optional; blank creates tier_N)"]'
@@ -149,6 +160,57 @@ describe('H3 pricing tier editor', () => {
 
     await act(async () => changeInputValue(nameInput, 'custom-tier'))
     assert.equal(addButton.disabled, false)
+
+    await act(async () => root.unmount())
+    container.remove()
+    queryClient.clear()
+  })
+
+  test('shows the normal routing group bound to each pricing tier', async () => {
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root = createRoot(container)
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    queryClient.setQueryData(['h3-price-groups'], {
+      success: true,
+      data: [
+        {
+          group: 'dance-tier',
+          bound_group: 'h3-route',
+          price_768p: 0.04,
+          price_2k: 0.3,
+          user_count: 0,
+        },
+      ],
+    })
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nextProvider i18n={i18n}>
+            <RunningHubH3GroupPriceEditor
+              value={JSON.stringify({
+                'dance-tier': {
+                  group: 'h3-route',
+                  price_768p: 0.04,
+                  price_2k: 0.3,
+                },
+              })}
+              groupOptions={['default', 'h3-route']}
+              onChange={() => undefined}
+            />
+          </I18nextProvider>
+        </QueryClientProvider>
+      )
+    })
+
+    const groupTrigger = container.querySelector<HTMLElement>(
+      '[aria-label="Bound normal group: dance-tier"]'
+    )
+    assert.ok(groupTrigger)
+    assert.match(groupTrigger.textContent ?? '', /h3-route/)
 
     await act(async () => root.unmount())
     container.remove()

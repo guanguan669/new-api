@@ -112,6 +112,7 @@ type RegistryEntry = {
 type RunningHubH3GroupPrice = {
   price_768p: number
   price_2k: number
+  group?: string
 }
 
 const sectionCardClassName =
@@ -170,6 +171,9 @@ function parseRunningHubH3GroupPriceMap(
     map[group] = {
       price_768p: Number.isFinite(price768p) ? price768p : 0,
       price_2k: Number.isFinite(price2k) ? price2k : 0,
+      ...(typeof price?.group === 'string'
+        ? { group: price.group.trim() }
+        : {}),
     }
   }
 
@@ -180,6 +184,16 @@ function serializeRunningHubH3GroupPriceMap(
   map: Record<string, RunningHubH3GroupPrice>
 ): string {
   return JSON.stringify(map, null, 2)
+}
+
+function resolveRunningHubH3BoundGroup(
+  plan: string,
+  price: RunningHubH3GroupPrice | undefined,
+  groupOptions: string[]
+): string {
+  if (price?.group !== undefined) return price.group.trim()
+  if (groupOptions.includes(plan)) return plan
+  return ''
 }
 
 function buildGroupPricingRows(
@@ -334,6 +348,10 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
     () => registry.map((entry) => entry.name),
     [registry]
   )
+  const billableGroupNames = useMemo(
+    () => Object.keys(parseRatioMap(groupRatio)),
+    [groupRatio]
+  )
 
   // Auto groups
   const autoGroupsList = useMemo(() => {
@@ -387,6 +405,7 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
 
       <RunningHubH3GroupPriceEditor
         value={runningHubH3GroupPrice}
+        groupOptions={billableGroupNames}
         onChange={onChange}
       />
 
@@ -729,11 +748,13 @@ function GroupPricingTable({
 
 type RunningHubH3GroupPriceEditorProps = {
   value: string
+  groupOptions?: string[]
   onChange: (field: string, value: string) => void
 }
 
 export function RunningHubH3GroupPriceEditor({
   value,
+  groupOptions = [],
   onChange,
 }: RunningHubH3GroupPriceEditorProps) {
   const { t } = useTranslation()
@@ -755,6 +776,12 @@ export function RunningHubH3GroupPriceEditor({
     [persistedTiersData]
   )
   const managedTierPrice = managedTier ? priceMap[managedTier] : undefined
+  let managedTierBoundGroup = ''
+  if (managedTier) {
+    managedTierBoundGroup =
+      persistedTiers.get(managedTier)?.bound_group ??
+      resolveRunningHubH3BoundGroup(managedTier, managedTierPrice, groupOptions)
+  }
   const normalizedPlanName = newPlanName.trim()
   const hasCustomPlanName = normalizedPlanName.length > 0
   const planNameExists =
@@ -794,10 +821,21 @@ export function RunningHubH3GroupPriceEditor({
     const planName = normalizedPlanName || getNextRunningHubH3TierName(priceMap)
     emitMap({
       ...priceMap,
-      [planName]: { price_768p: 0.1, price_2k: 0.3 },
+      [planName]: {
+        price_768p: 0.1,
+        price_2k: 0.3,
+        ...(groupOptions[0] ? { group: groupOptions[0] } : {}),
+      },
     })
     setNewPlanName('')
-  }, [emitMap, normalizedPlanName, planNameExists, planNameReserved, priceMap])
+  }, [
+    emitMap,
+    groupOptions,
+    normalizedPlanName,
+    planNameExists,
+    planNameReserved,
+    priceMap,
+  ])
 
   const updatePrice = useCallback(
     (plan: string, field: keyof RunningHubH3GroupPrice, price: number) => {
@@ -806,6 +844,19 @@ export function RunningHubH3GroupPriceEditor({
         [plan]: {
           ...priceMap[plan],
           [field]: price,
+        },
+      })
+    },
+    [emitMap, priceMap]
+  )
+
+  const updateBoundGroup = useCallback(
+    (plan: string, group: string) => {
+      emitMap({
+        ...priceMap,
+        [plan]: {
+          ...priceMap[plan],
+          group,
         },
       })
     },
@@ -839,7 +890,7 @@ export function RunningHubH3GroupPriceEditor({
             <CardTitle>{t('H3 user pricing tiers')}</CardTitle>
             <CardDescription>
               {t(
-                'H3 pricing tiers are independent from normal groups and have no quantity limit. Users can stay in the same normal group while each user is assigned one saved tier.'
+                'Create any number of H3 pricing tiers and bind each tier to one normal group. Assigned users must have access to that group.'
               )}
             </CardDescription>
           </div>
@@ -890,6 +941,50 @@ export function RunningHubH3GroupPriceEditor({
                 header: t('Pricing tier'),
                 className: 'min-w-40',
                 cell: (row) => <span className='font-medium'>{row.plan}</span>,
+              },
+              {
+                id: 'normal-group',
+                header: t('Bound normal group'),
+                className: 'min-w-48',
+                cell: (row) => {
+                  const selectedGroup = resolveRunningHubH3BoundGroup(
+                    row.plan,
+                    row,
+                    groupOptions
+                  )
+                  const options =
+                    selectedGroup && !groupOptions.includes(selectedGroup)
+                      ? [selectedGroup, ...groupOptions]
+                      : groupOptions
+                  return (
+                    <Select
+                      value={selectedGroup || undefined}
+                      onValueChange={(nextGroup) => {
+                        if (typeof nextGroup === 'string') {
+                          updateBoundGroup(row.plan, nextGroup)
+                        }
+                      }}
+                    >
+                      <SelectTrigger
+                        className='w-full min-w-44'
+                        aria-label={t('Bound normal group: {{tier}}', {
+                          tier: row.plan,
+                        })}
+                      >
+                        <SelectValue placeholder={t('Select a normal group')} />
+                      </SelectTrigger>
+                      <SelectContent alignItemWithTrigger={false}>
+                        <SelectGroup>
+                          {options.map((group) => (
+                            <SelectItem key={group} value={group}>
+                              {group}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  )
+                },
               },
               {
                 id: 'price-768p',
@@ -1022,6 +1117,7 @@ export function RunningHubH3GroupPriceEditor({
             if (!open) setManagedTier(null)
           }}
           tier={managedTier}
+          boundGroup={managedTierBoundGroup}
           price768P={managedTierPrice.price_768p}
           price2K={managedTierPrice.price_2k}
         />

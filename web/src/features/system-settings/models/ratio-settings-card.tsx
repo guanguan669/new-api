@@ -135,15 +135,18 @@ const createGroupSchema = (t: Translate) =>
           const price = entry as Record<string, unknown>
           const price768p = Number(price.price_768p)
           const price2k = Number(price.price_2k)
+          const group = price.group
           return (
             Number.isFinite(price768p) &&
             Number.isFinite(price2k) &&
             price768p >= 0 &&
-            price2k >= 0
+            price2k >= 0 &&
+            (group === undefined ||
+              (typeof group === 'string' && group.trim().length > 0))
           )
         }),
       predicateMessage:
-        'Expected a JSON object: group -> { price_768p, price_2k } with non-negative prices',
+        'Expected a JSON object: tier -> { price_768p, price_2k, group? } with non-negative prices',
     }),
     AutoGroups: createJsonStringField(t, {
       predicate: (parsed) =>

@@ -172,9 +172,10 @@ export function UsersMutateDrawer({
   const formatH3PricingPlanLabel = (
     plan: string,
     price768p: number,
-    price2k: number
+    price2k: number,
+    boundGroup?: string
   ) =>
-    `${plan} (${t('768p')}: ${price768p} CNY/sec, ${t('2K')}: ${price2k} CNY/sec)`
+    `${plan} · ${boundGroup ? t('Bound normal group: {{group}}', { group: boundGroup }) : t('Binding not configured')} (${t('768p')}: ${price768p} CNY/sec, ${t('2K')}: ${price2k} CNY/sec)`
 
   const onSubmit = async (data: UserFormValues) => {
     if (!isUpdate) {
@@ -452,7 +453,8 @@ export function UsersMutateDrawer({
                               label: formatH3PricingPlanLabel(
                                 pricingPlan.group,
                                 pricingPlan.price_768p,
-                                pricingPlan.price_2k
+                                pricingPlan.price_2k,
+                                pricingPlan.bound_group
                               ),
                             })),
                           ]}
@@ -483,7 +485,8 @@ export function UsersMutateDrawer({
                                   {formatH3PricingPlanLabel(
                                     pricingPlan.group,
                                     pricingPlan.price_768p,
-                                    pricingPlan.price_2k
+                                    pricingPlan.price_2k,
+                                    pricingPlan.bound_group
                                   )}
                                 </SelectItem>
                               ))}
@@ -492,7 +495,7 @@ export function UsersMutateDrawer({
                         </Select>
                         <FormDescription>
                           {t(
-                            'This changes only the H3 pricing tier. The user keeps the same normal routing group.'
+                            'The user must have access to the normal group bound to this pricing tier.'
                           )}
                         </FormDescription>
                         <FormMessage />

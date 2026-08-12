@@ -595,7 +595,7 @@ func TestOverridePriceDataUserSettingH3PriceGroupOverridesUsingGroup(t *testing.
 	gin.SetMode(gin.TestMode)
 	withRunningHubH3GroupPrices(t, map[string]h3GroupPrice{
 		"using-group":   {Price768P: 0.10, Price2K: 0.30},
-		"setting-group": {Price768P: 0.40, Price2K: 1.20},
+		"setting-group": {Price768P: 0.40, Price2K: 1.20, BoundGroup: "using-group"},
 	})
 	withUSDExchangeRate(t, 7.3)
 	w := httptest.NewRecorder()
@@ -612,6 +612,28 @@ func TestOverridePriceDataUserSettingH3PriceGroupOverridesUsingGroup(t *testing.
 	require.True(t, ok)
 	assert.InDelta(t, 0.40/7.3, priceData.ModelPrice, 0.000001)
 	assert.Equal(t, expectedH3Quota(t, (0.40*5)/7.3), priceData.Quota)
+}
+
+func TestOverridePriceDataMismatchedAssignedTierFallsBackToUsingGroup(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	withRunningHubH3GroupPrices(t, map[string]h3GroupPrice{
+		"using-group":   {Price768P: 0.10, Price2K: 0.30},
+		"assigned-tier": {Price768P: 0.40, Price2K: 1.20, BoundGroup: "other-group"},
+	})
+	withUSDExchangeRate(t, 7.3)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+	ctx.Set("task_request", relaycommon.TaskSubmitReq{Seconds: "5"})
+
+	priceData, ok, err := (&TaskAdaptor{}).OverridePriceData(ctx, &relaycommon.RelayInfo{
+		OriginModelName: modelName,
+		UsingGroup:      "using-group",
+		UserSetting:     dto.UserSetting{RunningHubH3PriceGroup: "assigned-tier"},
+	})
+
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.InDelta(t, 0.10/7.3, priceData.ModelPrice, 0.000001)
 }
 
 func TestOverridePriceDataEmptyUserSettingH3PriceGroupFallsBackToUsingGroup(t *testing.T) {
@@ -687,6 +709,9 @@ func withRunningHubH3GroupPrices(t *testing.T, configuredPrices map[string]h3Gro
 		price, ok := configuredPrices[group]
 		if !ok {
 			return h3GroupPrice{}, false
+		}
+		if price.BoundGroup == "" {
+			price.BoundGroup = group
 		}
 		return price, true
 	}

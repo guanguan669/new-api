@@ -21,8 +21,8 @@ func TestFilterRunningHubH3GroupPricesByUsableGroups(t *testing.T) {
 	})
 
 	assert.Equal(t, map[string]ratio_setting.RunningHubH3GroupPrice{
-		"default": {Price768P: 0, Price2K: 0.2},
-		"svip":    {Price768P: 0.3, Price2K: 0.8},
+		"default": {Price768P: 0, Price2K: 0.2, BoundGroup: "default"},
+		"svip":    {Price768P: 0.3, Price2K: 0.8, BoundGroup: "svip"},
 	}, prices)
 	assert.NotContains(t, prices, "vip")
 }
@@ -32,7 +32,7 @@ func TestFilterRunningHubH3GroupPricesNoUsableGroups(t *testing.T) {
 	assert.Empty(t, prices)
 }
 
-func TestFilterRunningHubH3GroupPricesForUserUsesAssignedGroupOutsideUsableGroups(t *testing.T) {
+func TestFilterRunningHubH3GroupPricesForUserHidesAssignedBoundGroupOutsideUsableGroups(t *testing.T) {
 	original := ratio_setting.RunningHubH3GroupPrice2JSONString()
 	t.Cleanup(func() {
 		require.NoError(t, ratio_setting.UpdateRunningHubH3GroupPriceByJSONString(original))
@@ -41,9 +41,7 @@ func TestFilterRunningHubH3GroupPricesForUserUsesAssignedGroupOutsideUsableGroup
 
 	prices := filterRunningHubH3GroupPricesForUser(map[string]string{}, "default")
 
-	assert.Equal(t, map[string]ratio_setting.RunningHubH3GroupPrice{
-		"default": {Price768P: 0.04, Price2K: 0.12},
-	}, prices)
+	assert.Empty(t, prices)
 }
 
 func TestFilterRunningHubH3GroupPricesForUserUsesStandalonePlan(t *testing.T) {
@@ -78,6 +76,22 @@ func TestResolveRunningHubH3PricingForUserReturnsAssignedPlanName(t *testing.T) 
 	}, prices)
 }
 
+func TestResolveRunningHubH3PricingForUserFallsBackWhenBoundGroupIsNotUsable(t *testing.T) {
+	original := ratio_setting.RunningHubH3GroupPrice2JSONString()
+	t.Cleanup(func() { require.NoError(t, ratio_setting.UpdateRunningHubH3GroupPriceByJSONString(original)) })
+	require.NoError(t, ratio_setting.UpdateRunningHubH3GroupPriceByJSONString(`{
+		"vip-tier":{"group":"vip","price_768p":0.04,"price_2k":0.3},
+		"default":{"price_768p":0.1,"price_2k":0.5}
+	}`))
+
+	prices, assignedPlan := resolveRunningHubH3PricingForUser(map[string]string{"default": "Default"}, "vip-tier")
+
+	assert.Empty(t, assignedPlan)
+	assert.Equal(t, map[string]ratio_setting.RunningHubH3GroupPrice{
+		"default": {Price768P: 0.1, Price2K: 0.5, BoundGroup: "default"},
+	}, prices)
+}
+
 func TestFilterRunningHubH3GroupPricesForUserFallsBackWhenAssignmentRemoved(t *testing.T) {
 	original := ratio_setting.RunningHubH3GroupPrice2JSONString()
 	t.Cleanup(func() {
@@ -90,7 +104,7 @@ func TestFilterRunningHubH3GroupPricesForUserFallsBackWhenAssignmentRemoved(t *t
 	}, "removed_group")
 
 	assert.Equal(t, map[string]ratio_setting.RunningHubH3GroupPrice{
-		"default": {Price768P: 0.1, Price2K: 0.3},
+		"default": {Price768P: 0.1, Price2K: 0.3, BoundGroup: "default"},
 	}, prices)
 
 	resolvedPrices, assignedPlan := resolveRunningHubH3PricingForUser(map[string]string{

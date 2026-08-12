@@ -14,13 +14,15 @@ const RunningHubH3GroupPriceOptionKey = "RunningHubH3GroupPrice"
 const h3PricePlanNoneSentinel = "__none__"
 
 type RunningHubH3GroupPrice struct {
-	Price768P float64 `json:"price_768p"`
-	Price2K   float64 `json:"price_2k"`
+	Price768P  float64 `json:"price_768p"`
+	Price2K    float64 `json:"price_2k"`
+	BoundGroup string  `json:"group,omitempty"`
 }
 
 type runningHubH3GroupPriceInput struct {
-	Price768P *float64 `json:"price_768p"`
-	Price2K   *float64 `json:"price_2k"`
+	Price768P  *float64 `json:"price_768p"`
+	Price2K    *float64 `json:"price_2k"`
+	BoundGroup *string  `json:"group"`
 }
 
 func RunningHubH3GroupPrice2JSONString() string {
@@ -47,6 +49,10 @@ func UpdateRunningHubH3GroupPriceByJSONString(jsonStr string) error {
 func ValidateRunningHubH3GroupPriceJSON(jsonStr string) error {
 	_, err := parseRunningHubH3GroupPriceJSON(jsonStr)
 	return err
+}
+
+func ParseRunningHubH3GroupPriceJSON(jsonStr string) (map[string]RunningHubH3GroupPrice, error) {
+	return parseRunningHubH3GroupPriceJSON(jsonStr)
 }
 
 func parseRunningHubH3GroupPriceJSON(jsonStr string) (map[string]RunningHubH3GroupPrice, error) {
@@ -82,9 +88,22 @@ func parseRunningHubH3GroupPriceJSON(jsonStr string) (map[string]RunningHubH3Gro
 		if err := validateRunningHubH3GroupPriceValue("price_2k", plan, *price.Price2K); err != nil {
 			return nil, err
 		}
+		boundGroup := ""
+		if price.BoundGroup != nil {
+			boundGroup = strings.TrimSpace(*price.BoundGroup)
+			if boundGroup == "" {
+				return nil, fmt.Errorf("h3 price plan group cannot be empty: %s", plan)
+			}
+			if !ContainsGroupRatio(boundGroup) {
+				return nil, fmt.Errorf("h3 price plan group is not configured in GroupRatio: %s", boundGroup)
+			}
+		} else if ContainsGroupRatio(plan) {
+			boundGroup = plan
+		}
 		prices[plan] = RunningHubH3GroupPrice{
-			Price768P: *price.Price768P,
-			Price2K:   *price.Price2K,
+			Price768P:  *price.Price768P,
+			Price2K:    *price.Price2K,
+			BoundGroup: boundGroup,
 		}
 	}
 	return prices, nil

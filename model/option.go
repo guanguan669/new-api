@@ -374,11 +374,7 @@ func lockRunningHubH3PriceGroups(tx *gorm.DB) (map[string]ratio_setting.RunningH
 		return map[string]ratio_setting.RunningHubH3GroupPrice{}, nil
 	}
 
-	configured := make(map[string]ratio_setting.RunningHubH3GroupPrice)
-	if err := common.UnmarshalJsonStr(value, &configured); err != nil {
-		return nil, err
-	}
-	return configured, nil
+	return ratio_setting.ParseRunningHubH3GroupPriceJSON(value)
 }
 
 func WithRunningHubH3PriceGroupOptionLock(
@@ -400,12 +396,12 @@ func updateRunningHubH3PriceOption(_ string, value string) error {
 	if err := ratio_setting.ValidateRunningHubH3GroupPriceJSON(value); err != nil {
 		return err
 	}
-	next := make(map[string]ratio_setting.RunningHubH3GroupPrice)
-	if err := common.UnmarshalJsonStr(value, &next); err != nil {
+	next, err := ratio_setting.ParseRunningHubH3GroupPriceJSON(value)
+	if err != nil {
 		return err
 	}
 
-	err := DB.Transaction(func(tx *gorm.DB) error {
+	err = DB.Transaction(func(tx *gorm.DB) error {
 		option := Option{Key: ratio_setting.RunningHubH3GroupPriceOptionKey}
 		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&option).Error; err != nil {
 			return err

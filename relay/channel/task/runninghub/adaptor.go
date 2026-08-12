@@ -64,8 +64,9 @@ var imageNodeIDs = []string{"137", "618", "617", "619", "627", "626", "625", "62
 var audioNodeIDs = []string{"628", "630", "629"}
 
 type h3GroupPrice struct {
-	Price768P float64
-	Price2K   float64
+	Price768P  float64
+	Price2K    float64
+	BoundGroup string
 }
 
 var lookupRunningHubH3GroupPrice = func(group string) (h3GroupPrice, bool) {
@@ -73,7 +74,7 @@ var lookupRunningHubH3GroupPrice = func(group string) (h3GroupPrice, bool) {
 	if !ok {
 		return h3GroupPrice{}, false
 	}
-	return h3GroupPrice{Price768P: price.Price768P, Price2K: price.Price2K}, true
+	return h3GroupPrice{Price768P: price.Price768P, Price2K: price.Price2K, BoundGroup: price.BoundGroup}, true
 }
 
 type TaskAdaptor struct {
@@ -239,8 +240,14 @@ func (a *TaskAdaptor) OverridePriceData(c *gin.Context, info *relaycommon.RelayI
 	helper.HandleGroupRatio(c, info)
 	priceGroup := strings.TrimSpace(info.UserSetting.RunningHubH3PriceGroup)
 	groupPrice, ok := lookupRunningHubH3GroupPrice(priceGroup)
+	if ok && strings.TrimSpace(groupPrice.BoundGroup) != "" && strings.TrimSpace(groupPrice.BoundGroup) != strings.TrimSpace(info.UsingGroup) {
+		ok = false
+	}
 	if priceGroup == "" || !ok {
 		groupPrice, ok = lookupRunningHubH3GroupPrice(info.UsingGroup)
+		if ok && strings.TrimSpace(groupPrice.BoundGroup) != "" && strings.TrimSpace(groupPrice.BoundGroup) != strings.TrimSpace(info.UsingGroup) {
+			ok = false
+		}
 	}
 	if !ok {
 		return hosttypes.PriceData{}, false, nil

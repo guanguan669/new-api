@@ -131,6 +131,7 @@ export interface UserFormData {
 
 export interface H3PricingPlan {
   group: string
+  bound_group?: string
   price_768p: number
   price_2k: number
   user_count: number

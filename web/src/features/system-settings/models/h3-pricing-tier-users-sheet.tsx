@@ -56,6 +56,7 @@ type H3PricingTierUsersSheetProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
   tier: string
+  boundGroup?: string
   price768P: number
   price2K: number
 }
@@ -76,6 +77,7 @@ export function H3PricingTierUsersSheet({
   open,
   onOpenChange,
   tier,
+  boundGroup,
   price768P,
   price2K,
 }: H3PricingTierUsersSheetProps) {
@@ -189,6 +191,10 @@ export function H3PricingTierUsersSheet({
               price768P,
               price2K,
             })}
+            {' · '}
+            {boundGroup
+              ? t('Bound normal group: {{group}}', { group: boundGroup })
+              : t('Binding not configured')}
           </SheetDescription>
         </SheetHeader>
 
@@ -198,7 +204,7 @@ export function H3PricingTierUsersSheet({
               icon={<UserPlus className='h-4 w-4' />}
               title={t('Add or move user')}
               description={t(
-                'Search by user ID, username, display name, or email. The user keeps the same normal routing group.'
+                'Search by user ID, username, display name, or email. The user must have access to the bound normal group.'
               )}
             />
 

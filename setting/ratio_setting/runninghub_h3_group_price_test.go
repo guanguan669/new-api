@@ -32,6 +32,38 @@ func TestRunningHubH3GroupPriceAllowsPlansOutsideGroupRatio(t *testing.T) {
 	require.NoError(t, ValidateRunningHubH3GroupPriceJSON(`{"private-plan":{"price_768p":0.04,"price_2k":0.3}}`))
 }
 
+func TestRunningHubH3GroupPriceExplicitAndLegacyBindings(t *testing.T) {
+	originalPrices := RunningHubH3GroupPrice2JSONString()
+	originalGroups := GroupRatio2JSONString()
+	t.Cleanup(func() {
+		require.NoError(t, UpdateGroupRatioByJSONString(originalGroups))
+		require.NoError(t, UpdateRunningHubH3GroupPriceByJSONString(originalPrices))
+	})
+	require.NoError(t, UpdateGroupRatioByJSONString(`{"default":1,"vip":1}`))
+	require.NoError(t, UpdateRunningHubH3GroupPriceByJSONString(`{
+		"legacy-same-name":{"price_768p":0.1,"price_2k":0.3},
+		"vip":{"price_768p":0.2,"price_2k":0.6},
+		"custom-tier":{"group":"default","price_768p":0.3,"price_2k":0.9},
+		"legacy-standalone":{"price_768p":0.4,"price_2k":1.2}
+	}`))
+
+	vip, ok := GetRunningHubH3GroupPrice("vip")
+	require.True(t, ok)
+	assert.Equal(t, "vip", vip.BoundGroup)
+	custom, ok := GetRunningHubH3GroupPrice("custom-tier")
+	require.True(t, ok)
+	assert.Equal(t, "default", custom.BoundGroup)
+	standalone, ok := GetRunningHubH3GroupPrice("legacy-standalone")
+	require.True(t, ok)
+	assert.Empty(t, standalone.BoundGroup)
+	assert.Contains(t, RunningHubH3GroupPrice2JSONString(), `"group":"default"`)
+}
+
+func TestRunningHubH3GroupPriceRejectsUnknownExplicitBinding(t *testing.T) {
+	assert.ErrorContains(t, ValidateRunningHubH3GroupPriceJSON(`{"custom":{"group":"missing","price_768p":0.1,"price_2k":0.3}}`), "GroupRatio")
+	assert.ErrorContains(t, ValidateRunningHubH3GroupPriceJSON(`{"custom":{"group":" ","price_768p":0.1,"price_2k":0.3}}`), "cannot be empty")
+}
+
 func TestRunningHubH3GroupPriceAllowsManyPricingTiers(t *testing.T) {
 	tiers := make(map[string]RunningHubH3GroupPrice, 512)
 	for index := 1; index <= 512; index++ {
