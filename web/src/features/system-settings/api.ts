@@ -19,12 +19,14 @@ For commercial licensing, please contact support@quantumnous.com
 import { api } from '@/lib/api'
 
 import type {
+  ComfyUIH3PromptEnhancerChannelsResponse,
   ConfirmPaymentComplianceResponse,
   FetchUpstreamRatiosRequest,
   LogCleanupTask,
   SystemOptionsResponse,
   SystemTaskListResponse,
   SystemTaskResponse,
+  UpdateComfyUIH3PromptEnhancerRequest,
   UpdateOptionRequest,
   UpdateOptionResponse,
   UpstreamChannelsResponse,
@@ -38,6 +40,23 @@ export async function getSystemOptions() {
 
 export async function updateSystemOption(request: UpdateOptionRequest) {
   const res = await api.put<UpdateOptionResponse>('/api/option/', request)
+  return res.data
+}
+
+export async function updateComfyUIH3PromptEnhancer(
+  request: UpdateComfyUIH3PromptEnhancerRequest
+) {
+  const res = await api.put<UpdateOptionResponse>(
+    '/api/option/comfyui-h3-prompt-enhancer',
+    request
+  )
+  return res.data
+}
+
+export async function getComfyUIH3PromptEnhancerChannels() {
+  const res = await api.get<ComfyUIH3PromptEnhancerChannelsResponse>(
+    '/api/option/comfyui-h3-prompt-enhancer/channels'
+  )
   return res.data
 }
 

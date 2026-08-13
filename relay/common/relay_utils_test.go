@@ -95,6 +95,29 @@ func TestTaskSubmitReqAcceptsKuocaiDocumentVideoFields(t *testing.T) {
 	require.Equal(t, 2, req.Count)
 	require.Equal(t, "720P", req.Metadata["resolution"])
 	require.Equal(t, []interface{}{"https://cdn.example/one.jpg", "https://cdn.example/two.jpg"}, req.Metadata["reference_images"])
+	require.True(t, req.ShouldEnhancePrompt())
+}
+
+func TestTaskSubmitReqPromptEnhanceTriState(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		enabled bool
+	}{
+		{name: "omitted defaults enabled", body: `{"prompt":"dance"}`, enabled: true},
+		{name: "explicit true", body: `{"prompt":"dance","prompt_enhance":true}`, enabled: true},
+		{name: "explicit false", body: `{"prompt":"dance","prompt_enhance":false}`, enabled: false},
+		{name: "string false", body: `{"prompt":"dance","prompt_enhance":"false"}`, enabled: false},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			var req TaskSubmitReq
+			require.NoError(t, hostcommon.Unmarshal([]byte(testCase.body), &req))
+			require.Equal(t, testCase.enabled, req.ShouldEnhancePrompt())
+			_, leaked := req.Metadata["prompt_enhance"]
+			require.False(t, leaked)
+		})
+	}
 }
 
 func TestValidateBasicTaskRequestAcceptsOpenAIVideoMultipartForm(t *testing.T) {
@@ -121,6 +144,60 @@ func TestValidateBasicTaskRequestAcceptsOpenAIVideoMultipartForm(t *testing.T) {
 	require.Equal(t, "8", storedReq.Seconds)
 	require.Equal(t, 2, storedReq.Count)
 	require.Equal(t, "720P", storedReq.Metadata["resolution"])
+}
+
+func TestValidateBasicTaskRequestParsesMultipartPromptEnhance(t *testing.T) {
+	for _, testCase := range []struct {
+		name    string
+		value   string
+		present bool
+		enabled bool
+	}{
+		{name: "omitted defaults enabled", enabled: true},
+		{name: "explicit true", value: "true", present: true, enabled: true},
+		{name: "explicit false", value: "false", present: true, enabled: false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			var body bytes.Buffer
+			writer := multipart.NewWriter(&body)
+			require.NoError(t, writer.WriteField("model", "minimax_h3"))
+			require.NoError(t, writer.WriteField("prompt", "A dancer"))
+			if testCase.present {
+				require.NoError(t, writer.WriteField("prompt_enhance", testCase.value))
+			}
+			require.NoError(t, writer.Close())
+
+			request := httptest.NewRequest(http.MethodPost, "/v1/videos", &body)
+			request.Header.Set("Content-Type", writer.FormDataContentType())
+			context, _ := gin.CreateTestContext(httptest.NewRecorder())
+			context.Request = request
+			info := &RelayInfo{TaskRelayInfo: &TaskRelayInfo{}}
+
+			require.Nil(t, ValidateBasicTaskRequest(context, info, constant.TaskActionTextGenerate))
+			storedReq, err := GetTaskRequest(context)
+			require.NoError(t, err)
+			require.Equal(t, testCase.enabled, storedReq.ShouldEnhancePrompt())
+			_, leaked := storedReq.Metadata["prompt_enhance"]
+			require.False(t, leaked)
+		})
+	}
+}
+
+func TestValidateBasicTaskRequestRejectsInvalidMultipartPromptEnhance(t *testing.T) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	require.NoError(t, writer.WriteField("model", "minimax_h3"))
+	require.NoError(t, writer.WriteField("prompt", "A dancer"))
+	require.NoError(t, writer.WriteField("prompt_enhance", "sometimes"))
+	require.NoError(t, writer.Close())
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/videos", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Request = request
+	taskErr := ValidateBasicTaskRequest(context, &RelayInfo{TaskRelayInfo: &TaskRelayInfo{}}, constant.TaskActionTextGenerate)
+	require.NotNil(t, taskErr)
+	require.Equal(t, "invalid_multipart_form", taskErr.Code)
 }
 
 // TestTaskDurationBounds guards the billing invariant that user-supplied

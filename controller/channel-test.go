@@ -48,7 +48,7 @@ func normalizeChannelTestEndpoint(channel *model.Channel, modelName, endpointTyp
 	if normalized != "" {
 		return normalized
 	}
-	if channel != nil && (channel.Type == constant.ChannelTypeKuocai || channel.Type == constant.ChannelTypeRunningHub) {
+	if channel != nil && (channel.Type == constant.ChannelTypeKuocai || channel.Type == constant.ChannelTypeRunningHub || channel.Type == constant.ChannelTypeComfyUIH3) {
 		return string(constant.EndpointTypeOpenAIVideo)
 	}
 	if strings.HasSuffix(modelName, ratio_setting.CompactModelSuffix) {
@@ -86,6 +86,9 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 	}
 	if channel != nil && channel.Type == constant.ChannelTypeRunningHub {
 		return testRunningHubChannel(ctx, channel)
+	}
+	if channel != nil && channel.Type == constant.ChannelTypeComfyUIH3 {
+		return testComfyUIH3Channel(ctx, channel)
 	}
 	tik := time.Now()
 	var unsupportedTestChannelTypes = []int{
@@ -1191,6 +1194,10 @@ func testRunningHubChannel(ctx context.Context, channel *model.Channel) testResu
 		}
 	}
 	return testResult{}
+}
+
+func testComfyUIH3Channel(ctx context.Context, channel *model.Channel) testResult {
+	return testResult{localErr: validateComfyUIH3ChannelWorkers(ctx, channel)}
 }
 
 func redactRunningHubKey(err error, key string) error {

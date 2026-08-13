@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -483,6 +484,9 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 
 	if channel.Type == constant.ChannelTypeNewAPI && strings.TrimSpace(channel.GetBaseURL()) == "" {
 		return fmt.Errorf("New API channel base URL cannot be empty")
+	}
+	if channel.Type == constant.ChannelTypeComfyUIH3 && strings.TrimSpace(channel.GetBaseURL()) == "" {
+		return fmt.Errorf("ComfyUI H3 channel base URL cannot be empty")
 	}
 
 	if channel.Type == constant.ChannelTypeRunningHub {
@@ -1281,6 +1285,83 @@ func buildAdvancedCustomModelPreviewChannel(req fetchModelsRequest) (*model.Chan
 	return channel, nil
 }
 
+func normalizeModelPreviewBaseURL(rawBaseURL string) (string, error) {
+	baseURL := strings.TrimRight(strings.TrimSpace(rawBaseURL), "/")
+	if baseURL == "" {
+		return "", fmt.Errorf("base_url is required")
+	}
+	if strings.ContainsAny(baseURL, ",，") {
+		return "", fmt.Errorf("base_url must be a single URL")
+	}
+
+	parsed, err := url.ParseRequestURI(baseURL)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return "", fmt.Errorf("base_url must be a valid http(s) URL")
+	}
+	return baseURL, nil
+}
+
+func buildOrdinaryModelPreviewChannel(req fetchModelsRequest) (*model.Channel, error) {
+	if req.Type == constant.ChannelTypeAdvancedCustom {
+		return nil, fmt.Errorf("channel type must not be advanced custom")
+	}
+	if req.Type < 0 || req.Type >= len(constant.ChannelBaseURLs) {
+		return nil, fmt.Errorf("invalid channel type: %d", req.Type)
+	}
+
+	var channel *model.Channel
+	if req.ChannelID > 0 {
+		savedChannel, err := model.GetChannelById(req.ChannelID, true)
+		if err != nil {
+			return nil, err
+		}
+		if savedChannel.Type != req.Type {
+			return nil, fmt.Errorf("channel type mismatch: saved type is %d, requested type is %d", savedChannel.Type, req.Type)
+		}
+		channel = savedChannel
+	} else {
+		channel = &model.Channel{Type: req.Type}
+	}
+
+	key := strings.TrimSpace(req.Key)
+	if key != "" {
+		if req.Type != constant.ChannelTypeCodex {
+			key = strings.Split(key, "\n")[0]
+		}
+		channel.Key = key
+	}
+
+	baseURL := channel.GetBaseURL()
+	if req.BaseURL != nil {
+		baseURL = *req.BaseURL
+	} else if strings.TrimSpace(baseURL) == "" {
+		baseURL = constant.ChannelBaseURLs[req.Type]
+	}
+	normalizedBaseURL, err := normalizeModelPreviewBaseURL(baseURL)
+	if err != nil {
+		return nil, err
+	}
+	channel.BaseURL = &normalizedBaseURL
+
+	if req.HeaderOverride != nil {
+		rawHeaderOverride := strings.TrimSpace(*req.HeaderOverride)
+		if rawHeaderOverride != "" {
+			var headerOverride map[string]any
+			if err := common.UnmarshalJsonStr(rawHeaderOverride, &headerOverride); err != nil {
+				return nil, fmt.Errorf("header_override must be a JSON object: %w", err)
+			}
+		}
+		channel.HeaderOverride = &rawHeaderOverride
+	}
+	if req.Proxy != nil {
+		settings := channel.GetSetting()
+		settings.Proxy = strings.TrimSpace(*req.Proxy)
+		channel.SetSetting(settings)
+	}
+
+	return channel, nil
+}
+
 func FetchModels(c *gin.Context) {
 	var req fetchModelsRequest
 
@@ -1293,7 +1374,7 @@ func FetchModels(c *gin.Context) {
 	}
 
 	var channel *model.Channel
-	if req.Type == constant.ChannelTypeAdvancedCustom || req.ChannelID > 0 {
+	if req.Type == constant.ChannelTypeAdvancedCustom {
 		var err error
 		channel, err = buildAdvancedCustomModelPreviewChannel(req)
 		if err != nil {
@@ -1304,22 +1385,14 @@ func FetchModels(c *gin.Context) {
 			return
 		}
 	} else {
-		baseURL := ""
-		if req.BaseURL != nil {
-			baseURL = strings.TrimSpace(*req.BaseURL)
-		}
-		if baseURL == "" {
-			baseURL = constant.ChannelBaseURLs[req.Type]
-		}
-
-		key := strings.TrimSpace(req.Key)
-		if req.Type != constant.ChannelTypeCodex {
-			key = strings.Split(key, "\n")[0]
-		}
-		channel = &model.Channel{
-			Type:    req.Type,
-			Key:     key,
-			BaseURL: &baseURL,
+		var err error
+		channel, err = buildOrdinaryModelPreviewChannel(req)
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
 		}
 	}
 

@@ -21,6 +21,7 @@ import { IoNetDeploymentSettingsSection } from '../integrations/ionet-deployment
 import type { ModelSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
 import { ClaudeSettingsCard } from './claude-settings-card'
+import { ComfyUIH3PromptEnhancerCard } from './comfyui-h3-prompt-enhancer-card'
 import { GeminiSettingsCard } from './gemini-settings-card'
 import { GlobalSettingsCard } from './global-settings-card'
 import { GrokSettingsCard } from './grok-settings-card'
@@ -141,6 +142,32 @@ const MODELS_SECTIONS = [
             settings['grok.violation_deduction_enabled'] ?? true,
           'grok.violation_deduction_amount':
             settings['grok.violation_deduction_amount'] ?? 0.05,
+        }}
+      />
+    ),
+  },
+  {
+    id: 'comfyui-h3-prompt-enhancer',
+    titleKey: 'Self-hosted H3 Prompt Enhancement',
+    build: (settings: ModelSettings) => (
+      <ComfyUIH3PromptEnhancerCard
+        defaultValues={{
+          'comfyui_h3_prompt_enhancer.enabled':
+            settings['comfyui_h3_prompt_enhancer.enabled'],
+          'comfyui_h3_prompt_enhancer.provider_mode':
+            settings['comfyui_h3_prompt_enhancer.provider_mode'],
+          'comfyui_h3_prompt_enhancer.channel_id':
+            settings['comfyui_h3_prompt_enhancer.channel_id'],
+          'comfyui_h3_prompt_enhancer.base_url':
+            settings['comfyui_h3_prompt_enhancer.base_url'],
+          'comfyui_h3_prompt_enhancer.api_key':
+            settings['comfyui_h3_prompt_enhancer.api_key'],
+          'comfyui_h3_prompt_enhancer.model':
+            settings['comfyui_h3_prompt_enhancer.model'],
+          'comfyui_h3_prompt_enhancer.timeout_seconds':
+            settings['comfyui_h3_prompt_enhancer.timeout_seconds'],
+          'comfyui_h3_prompt_enhancer.system_prompt':
+            settings['comfyui_h3_prompt_enhancer.system_prompt'],
         }}
       />
     ),

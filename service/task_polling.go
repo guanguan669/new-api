@@ -459,6 +459,9 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	if privateData.Key != "" {
 		key = privateData.Key
 	}
+	if ch.Type == constant.ChannelTypeComfyUIH3 && ch.IsConfiguredComfyUIH3WorkerURL(privateData.UpstreamBaseURL) {
+		baseURL = strings.TrimSpace(privateData.UpstreamBaseURL)
+	}
 	snap := task.Snapshot()
 	var taskResult *relaycommon.TaskInfo
 	var responseBody []byte

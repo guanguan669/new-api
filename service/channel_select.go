@@ -2,6 +2,9 @@ package service
 
 import (
 	"errors"
+	"fmt"
+	"math/rand"
+	"sync"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -9,6 +12,11 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-gonic/gin"
 )
+
+var h3LoadReservationState = struct {
+	sync.Mutex
+	counts map[int]int64
+}{counts: make(map[int]int64)}
 
 type RetryParam struct {
 	Ctx          *gin.Context
@@ -81,6 +89,8 @@ func (p *RetryParam) ResetRetryNextTry() {
 //	Retry=3: GroupB, priority1 (startRetryIndex=2, priorityRetry=1)
 //	         分组B, 优先级1
 func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, error) {
+	ReleaseH3LoadReservation(param.Ctx)
+
 	var channel *model.Channel
 	var err error
 	selectGroup := param.TokenGroup
@@ -116,6 +126,9 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
 
 			channel, _ = model.GetRandomSatisfiedChannel(autoGroup, param.ModelName, priorityRetry, param.RequestPath)
+			if channel != nil {
+				channel = selectLeastLoadedH3Channel(param.Ctx, autoGroup, param.ModelName, priorityRetry, param.RequestPath, channel)
+			}
 			if channel == nil {
 				// Current group has no available channel for this model, try next group
 				// 当前分组没有该模型的可用渠道，尝试下一个分组
@@ -157,6 +170,108 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 		if err != nil {
 			return nil, param.TokenGroup, err
 		}
+		if channel != nil {
+			channel = selectLeastLoadedH3Channel(param.Ctx, param.TokenGroup, param.ModelName, param.GetRetry(), param.RequestPath, channel)
+		}
 	}
 	return channel, selectGroup, nil
+}
+
+func selectLeastLoadedH3Channel(ctx *gin.Context, group, modelName string, retry int, requestPath string, selected *model.Channel) *model.Channel {
+	if selected == nil || selected.Type != constant.ChannelTypeComfyUIH3 || ctx == nil {
+		return selected
+	}
+	candidates, err := model.GetSatisfiedChannelsAtPriority(group, modelName, retry, requestPath)
+	if err != nil || len(candidates) < 2 {
+		return selected
+	}
+	for _, candidate := range candidates {
+		if candidate == nil || candidate.Type != constant.ChannelTypeComfyUIH3 {
+			return selected
+		}
+	}
+
+	channelIDs := make([]int, 0, len(candidates))
+	for _, candidate := range candidates {
+		channelIDs = append(channelIDs, candidate.Id)
+	}
+	activeCounts, err := model.CountActiveTasksByChannel(channelIDs)
+	if err != nil {
+		logger.LogWarn(ctx, fmt.Sprintf("failed to read ComfyUI H3 channel load; using normal weighted selection: %v", err))
+		return selected
+	}
+
+	h3LoadReservationState.Lock()
+	defer h3LoadReservationState.Unlock()
+	minLoad := int64(-1)
+	leastLoaded := make([]*model.Channel, 0, len(candidates))
+	for _, candidate := range candidates {
+		load := activeCounts[candidate.Id] + h3LoadReservationState.counts[candidate.Id]
+		if minLoad == -1 || load < minLoad {
+			minLoad = load
+			leastLoaded = leastLoaded[:0]
+			leastLoaded = append(leastLoaded, candidate)
+			continue
+		}
+		if load == minLoad {
+			leastLoaded = append(leastLoaded, candidate)
+		}
+	}
+	chosen := weightedH3Candidate(leastLoaded)
+	if chosen == nil {
+		return selected
+	}
+	h3LoadReservationState.counts[chosen.Id]++
+	common.SetContextKey(ctx, constant.ContextKeyH3LoadReservation, chosen.Id)
+	return chosen
+}
+
+func weightedH3Candidate(channels []*model.Channel) *model.Channel {
+	if len(channels) == 0 {
+		return nil
+	}
+	if len(channels) == 1 {
+		return channels[0]
+	}
+	totalWeight := 0
+	for _, channel := range channels {
+		weight := channel.GetWeight()
+		if weight <= 0 {
+			weight = 100
+		}
+		totalWeight += weight
+	}
+	choice := rand.Intn(totalWeight)
+	for _, channel := range channels {
+		weight := channel.GetWeight()
+		if weight <= 0 {
+			weight = 100
+		}
+		choice -= weight
+		if choice < 0 {
+			return channel
+		}
+	}
+	return channels[len(channels)-1]
+}
+
+// ReleaseH3LoadReservation releases the temporary selection reservation after
+// the upstream submission attempt has either produced a persisted task or
+// failed. Persisted active tasks are counted by the next selection query.
+func ReleaseH3LoadReservation(ctx *gin.Context) {
+	if ctx == nil {
+		return
+	}
+	channelID, ok := common.GetContextKeyType[int](ctx, constant.ContextKeyH3LoadReservation)
+	if !ok || channelID <= 0 {
+		return
+	}
+	h3LoadReservationState.Lock()
+	if h3LoadReservationState.counts[channelID] <= 1 {
+		delete(h3LoadReservationState.counts, channelID)
+	} else {
+		h3LoadReservationState.counts[channelID]--
+	}
+	h3LoadReservationState.Unlock()
+	common.SetContextKey(ctx, constant.ContextKeyH3LoadReservation, 0)
 }

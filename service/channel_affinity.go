@@ -665,6 +665,19 @@ func ClearCurrentChannelAffinityCache(c *gin.Context) bool {
 	return false
 }
 
+// IgnoreChannelAffinityForRequest removes affinity state from the current
+// request. It is used by load-balanced H3 task channels, where sticky routing
+// would pin future jobs to one GPU and defeat least-load scheduling.
+func IgnoreChannelAffinityForRequest(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	c.Set(ginKeyChannelAffinityCacheKey, "")
+	c.Set(ginKeyChannelAffinityTTLSeconds, 0)
+	c.Set(ginKeyChannelAffinityMeta, channelAffinityMeta{})
+	c.Set(ginKeyChannelAffinitySkipRetry, false)
+}
+
 func ShouldKeepChannelAffinityOnChannelDisabled() bool {
 	setting := operation_setting.GetChannelAffinitySetting()
 	if setting == nil {

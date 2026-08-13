@@ -177,6 +177,13 @@ func validateMultipartTaskRequest(c *gin.Context, info *RelayInfo, action string
 		Size:     formData.Get("size"),
 		Metadata: make(map[string]interface{}),
 	}
+	if value, exists := formData["prompt_enhance"]; exists && len(value) > 0 {
+		promptEnhance, parseErr := strconv.ParseBool(strings.TrimSpace(value[0]))
+		if parseErr != nil {
+			return req, fmt.Errorf("prompt_enhance must be true or false")
+		}
+		req.PromptEnhance = &promptEnhance
+	}
 
 	if durationStr := formData.Get("seconds"); durationStr != "" {
 		if duration, err := strconv.Atoi(durationStr); err == nil {
@@ -275,6 +282,7 @@ func ValidateMultipartDirect(c *gin.Context, info *RelayInfo) *dto.TaskError {
 func isKnownTaskField(field string) bool {
 	knownFields := map[string]bool{
 		"prompt":          true,
+		"prompt_enhance":  true,
 		"model":           true,
 		"mode":            true,
 		"image":           true,

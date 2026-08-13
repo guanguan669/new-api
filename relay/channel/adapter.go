@@ -82,3 +82,9 @@ type TaskAdaptor interface {
 type OpenAIVideoConverter interface {
 	ConvertToOpenAIVideo(originTask *model.Task) ([]byte, error)
 }
+
+// TaskOutputMetadataProvider exposes the normalized output parameters that
+// an adaptor will submit upstream. Implementations are optional.
+type TaskOutputMetadataProvider interface {
+	GetTaskOutputMetadata(c *gin.Context, info *relaycommon.RelayInfo) (seconds int, size string, err error)
+}

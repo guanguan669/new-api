@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/config"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/performance_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
@@ -24,6 +25,7 @@ import (
 const runningHubH3NamespacedPriceOptionKey = "group_ratio_setting.runninghub_h3_group_price"
 
 var runningHubH3PriceOptionMu sync.Mutex
+var comfyUIH3PromptEnhancerSettingsMu sync.Mutex
 
 type Option struct {
 	Key   string `json:"key" gorm:"primaryKey"`
@@ -204,11 +206,18 @@ func loadOptionsFromDatabase() {
 }
 
 func loadOptionValues(options []*Option) {
+	comfyUIH3PromptEnhancerSettingsMu.Lock()
+	defer comfyUIH3PromptEnhancerSettingsMu.Unlock()
+
 	var canonicalH3Option *Option
 	var namespacedH3Option *Option
+	comfyUIH3PromptEnhancerOptions := make(map[string]string)
 	for _, option := range options {
 		if isGroupRatioOptionKey(option.Key) {
 			applyLoadedOption(option)
+		}
+		if isComfyUIH3PromptEnhancerOptionKey(option.Key) {
+			comfyUIH3PromptEnhancerOptions[option.Key] = option.Value
 		}
 		if option.Key == ratio_setting.RunningHubH3GroupPriceOptionKey {
 			canonicalH3Option = option
@@ -218,11 +227,12 @@ func loadOptionValues(options []*Option) {
 		}
 	}
 	for _, option := range options {
-		if isGroupRatioOptionKey(option.Key) || isRunningHubH3GroupPriceOptionKey(option.Key) {
+		if isGroupRatioOptionKey(option.Key) || isRunningHubH3GroupPriceOptionKey(option.Key) || isComfyUIH3PromptEnhancerOptionKey(option.Key) {
 			continue
 		}
 		applyLoadedOption(option)
 	}
+	applyLoadedComfyUIH3PromptEnhancerOptions(comfyUIH3PromptEnhancerOptions)
 
 	h3Option := canonicalH3Option
 	if h3Option == nil || strings.TrimSpace(h3Option.Value) == "" {
@@ -233,6 +243,61 @@ func loadOptionValues(options []*Option) {
 		normalized.Key = ratio_setting.RunningHubH3GroupPriceOptionKey
 		applyLoadedOption(&normalized)
 	}
+}
+
+func isComfyUIH3PromptEnhancerOptionKey(key string) bool {
+	return strings.HasPrefix(key, "comfyui_h3_prompt_enhancer.")
+}
+
+func applyLoadedComfyUIH3PromptEnhancerOptions(values map[string]string) {
+	if len(values) == 0 {
+		return
+	}
+
+	settings := model_setting.GetComfyUIH3PromptEnhancerSettings()
+	previousBaseURL := strings.TrimRight(strings.TrimSpace(settings.BaseURL), "/")
+	if value, ok := values["comfyui_h3_prompt_enhancer.enabled"]; ok {
+		if enabled, err := strconv.ParseBool(strings.TrimSpace(value)); err == nil {
+			settings.Enabled = enabled
+		}
+	}
+	if value, ok := values["comfyui_h3_prompt_enhancer.provider_mode"]; ok {
+		settings.ProviderMode = model_setting.NormalizeComfyUIH3PromptEnhancerProviderMode(value)
+	}
+	if value, ok := values["comfyui_h3_prompt_enhancer.channel_id"]; ok {
+		if channelID, err := strconv.Atoi(strings.TrimSpace(value)); err == nil {
+			settings.ChannelID = channelID
+		}
+	}
+	if value, ok := values["comfyui_h3_prompt_enhancer.base_url"]; ok {
+		settings.BaseURL = value
+	}
+	if value, ok := values["comfyui_h3_prompt_enhancer.api_key"]; ok {
+		settings.APIKey = value
+	} else if currentBaseURL := strings.TrimRight(strings.TrimSpace(settings.BaseURL), "/"); currentBaseURL != previousBaseURL {
+		settings.APIKey = ""
+	}
+	if value, ok := values["comfyui_h3_prompt_enhancer.model"]; ok {
+		settings.Model = value
+	}
+	if value, ok := values["comfyui_h3_prompt_enhancer.timeout_seconds"]; ok {
+		if timeout, err := strconv.Atoi(strings.TrimSpace(value)); err == nil {
+			settings.TimeoutSeconds = timeout
+		}
+	}
+	if value, ok := values["comfyui_h3_prompt_enhancer.system_prompt"]; ok {
+		settings.SystemPrompt = value
+	}
+
+	common.OptionMapRWMutex.Lock()
+	if common.OptionMap == nil {
+		common.OptionMap = make(map[string]string)
+	}
+	for key, value := range values {
+		common.OptionMap[key] = value
+	}
+	common.OptionMapRWMutex.Unlock()
+	model_setting.ReplaceComfyUIH3PromptEnhancerSettings(settings)
 }
 
 func applyLoadedOption(option *Option) {
@@ -503,6 +568,40 @@ func UpdateOptionsBulk(values map[string]string) error {
 			return err
 		}
 	}
+	return nil
+}
+
+// UpdateComfyUIH3PromptEnhancerSettings persists the enhancer configuration in
+// one database transaction and exposes the new snapshot to readers only after
+// every option write succeeds.
+func UpdateComfyUIH3PromptEnhancerSettings(settings model_setting.ComfyUIH3PromptEnhancerSettings) error {
+	comfyUIH3PromptEnhancerSettingsMu.Lock()
+	defer comfyUIH3PromptEnhancerSettingsMu.Unlock()
+
+	values := model_setting.ComfyUIH3PromptEnhancerSettingsToOptions(settings)
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		for key, value := range values {
+			option := Option{Key: key}
+			if err := tx.FirstOrCreate(&option, Option{Key: key}).Error; err != nil {
+				return err
+			}
+			option.Value = value
+			if err := tx.Save(&option).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	common.OptionMapRWMutex.Lock()
+	for key, value := range values {
+		common.OptionMap[key] = value
+	}
+	common.OptionMapRWMutex.Unlock()
+	model_setting.ReplaceComfyUIH3PromptEnhancerSettings(settings)
 	return nil
 }
 

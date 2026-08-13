@@ -826,6 +826,10 @@ type TaskRelayInfo struct {
 	// PublicTaskID 是提交时预生成的 task_xxxx 格式公开 ID，
 	// 供 DoResponse 在返回给客户端时使用（避免暴露上游真实 ID）。
 	PublicTaskID string
+	// SelectedBackendURL is an internal worker chosen by a task adaptor. It is
+	// persisted with the task after a successful submit so all later polling and
+	// output retrieval stay on the GPU that accepted the prompt.
+	SelectedBackendURL string
 
 	ConsumeQuota bool
 
@@ -837,6 +841,7 @@ type TaskRelayInfo struct {
 
 type TaskSubmitReq struct {
 	Prompt         string                 `json:"prompt"`
+	PromptEnhance  *bool                  `json:"prompt_enhance,omitempty"`
 	Model          string                 `json:"model,omitempty"`
 	Mode           string                 `json:"mode,omitempty"`
 	Image          string                 `json:"image,omitempty"`
@@ -848,6 +853,10 @@ type TaskSubmitReq struct {
 	N              int                    `json:"n,omitempty"`
 	InputReference string                 `json:"input_reference,omitempty"`
 	Metadata       map[string]interface{} `json:"metadata,omitempty"`
+}
+
+func (t TaskSubmitReq) ShouldEnhancePrompt() bool {
+	return t.PromptEnhance == nil || *t.PromptEnhance
 }
 
 func (t *TaskSubmitReq) GetPrompt() string {
@@ -863,11 +872,12 @@ func (t *TaskSubmitReq) UnmarshalJSON(data []byte) error {
 
 	type Alias TaskSubmitReq
 	aux := &struct {
-		Metadata json.RawMessage `json:"metadata,omitempty"`
-		Duration json.RawMessage `json:"duration,omitempty"`
-		Seconds  json.RawMessage `json:"seconds,omitempty"`
-		Count    json.RawMessage `json:"count,omitempty"`
-		N        json.RawMessage `json:"n,omitempty"`
+		Metadata      json.RawMessage `json:"metadata,omitempty"`
+		PromptEnhance json.RawMessage `json:"prompt_enhance,omitempty"`
+		Duration      json.RawMessage `json:"duration,omitempty"`
+		Seconds       json.RawMessage `json:"seconds,omitempty"`
+		Count         json.RawMessage `json:"count,omitempty"`
+		N             json.RawMessage `json:"n,omitempty"`
 		*Alias
 	}{
 		Alias: (*Alias)(t),
@@ -888,6 +898,23 @@ func (t *TaskSubmitReq) UnmarshalJSON(data []byte) error {
 					t.Duration = v
 				}
 			}
+		}
+	}
+
+	if len(aux.PromptEnhance) > 0 {
+		var promptEnhance bool
+		if err := common.Unmarshal(aux.PromptEnhance, &promptEnhance); err == nil {
+			t.PromptEnhance = &promptEnhance
+		} else {
+			var promptEnhanceText string
+			if err := common.Unmarshal(aux.PromptEnhance, &promptEnhanceText); err != nil {
+				return fmt.Errorf("prompt_enhance must be true or false")
+			}
+			parsed, err := strconv.ParseBool(strings.TrimSpace(promptEnhanceText))
+			if err != nil {
+				return fmt.Errorf("prompt_enhance must be true or false")
+			}
+			t.PromptEnhance = &parsed
 		}
 	}
 

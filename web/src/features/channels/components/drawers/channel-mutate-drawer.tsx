@@ -143,6 +143,7 @@ import {
   CHANNEL_TYPE_WARNINGS,
   ERROR_MESSAGES,
   FIELD_DESCRIPTIONS,
+  CHANNEL_TYPE_COMFYUI_H3,
   CHANNEL_TYPE_RUNNINGHUB,
   FIELD_PLACEHOLDERS,
   MODEL_FETCHABLE_TYPES,
@@ -226,6 +227,31 @@ type ChannelEditorNavItem = {
   children?: ChannelEditorNavChildItem[]
 }
 
+type ModelPreviewFormValues = Pick<
+  ChannelFormValues,
+  'type' | 'key' | 'base_url' | 'advanced_custom' | 'header_override' | 'proxy'
+>
+
+// oxlint-disable-next-line react/only-export-components -- exported for request contract regression tests
+export function buildModelPreviewPayload(
+  values: ModelPreviewFormValues,
+  editingChannelId?: number
+): Parameters<typeof fetchModels>[0] {
+  const key = values.key?.trim() ? values.key : undefined
+
+  return {
+    type: values.type,
+    ...(editingChannelId === undefined || key ? { key: values.key } : {}),
+    channel_id: editingChannelId,
+    base_url: String(values.base_url || '')
+      .trim()
+      .replace(/\/+$/, ''),
+    advanced_custom: values.advanced_custom,
+    header_override: values.header_override,
+    proxy: values.proxy,
+  }
+}
+
 // Helper functions
 const createEmptyModelMappingGuardrail = (): ModelMappingGuardrail => ({
   invalidJson: false,
@@ -286,6 +312,7 @@ const SENSITIVE_FORM_FIELDS = [
   'azure_responses_version',
   'runninghub_workflow_id',
   'runninghub_text_workflow_id',
+  'comfyui_h3_backend_urls',
   'force_format',
   'thinking_to_content',
   'proxy',
@@ -776,9 +803,7 @@ export function ChannelMutateDrawer({
   const currentUpstreamModelUpdateIgnoredModels = form.watch(
     'upstream_model_update_ignored_models'
   )
-  const shouldPreviewUnsavedModels =
-    !isEditing ||
-    (currentType === CHANNEL_TYPE_ADVANCED_CUSTOM && canEditSensitive)
+  const shouldPreviewUnsavedModels = !isEditing || canEditSensitive
   const {
     unlocked: doubaoApiEditUnlocked,
     handleClick: handleApiConfigSecretClick,
@@ -970,7 +995,8 @@ export function ChannelMutateDrawer({
     formErrors.aws_key_type ||
     formErrors.azure_responses_version ||
     formErrors.runninghub_workflow_id ||
-    formErrors.runninghub_text_workflow_id
+    formErrors.runninghub_text_workflow_id ||
+    formErrors.comfyui_h3_backend_urls
   )
   const modelsHaveErrors = Boolean(
     formErrors.models || formErrors.group || formErrors.model_mapping
@@ -1293,6 +1319,24 @@ export function ChannelMutateDrawer({
       }
     }
 
+    // Type 63 (direct ComfyUI H3) - set the bundled server defaults.
+    if (currentType === CHANNEL_TYPE_COMFYUI_H3) {
+      const currentBaseUrlValue = form.getValues('base_url')
+      if (!currentBaseUrlValue || currentBaseUrlValue === '') {
+        form.setValue('base_url', 'http://36.103.234.105:5900', {
+          shouldDirty: true,
+          shouldValidate: true,
+        })
+      }
+      const currentKeyValue = form.getValues('key')
+      if (!currentKeyValue || currentKeyValue.trim() === '') {
+        form.setValue('key', 'comfyui-no-auth', {
+          shouldDirty: true,
+          shouldValidate: true,
+        })
+      }
+    }
+
     // Type 62 (RunningHub) - set default workflow ID
     if (currentType === CHANNEL_TYPE_RUNNINGHUB) {
       const currentWorkflowId = form.getValues('runninghub_workflow_id')
@@ -1492,21 +1536,22 @@ export function ChannelMutateDrawer({
     if (!canEditSensitive) {
       throw new Error(t("You don't have necessary permission"))
     }
-    const type = form.getValues('type')
-    const editingAdvancedCustom =
-      isEditing && type === CHANNEL_TYPE_ADVANCED_CUSTOM
-    if (editingAdvancedCustom && channelId === null) {
+    if (isEditing && channelId === null) {
       throw new Error(t('No channel selected'))
     }
-    const response = await fetchModels({
-      type,
-      key: isEditing ? undefined : form.getValues('key'),
-      channel_id: editingAdvancedCustom ? channelId || undefined : undefined,
-      base_url: form.getValues('base_url') || '',
-      advanced_custom: form.getValues('advanced_custom'),
-      header_override: form.getValues('header_override'),
-      proxy: form.getValues('proxy'),
-    })
+    const response = await fetchModels(
+      buildModelPreviewPayload(
+        {
+          type: form.getValues('type'),
+          key: form.getValues('key'),
+          base_url: form.getValues('base_url'),
+          advanced_custom: form.getValues('advanced_custom'),
+          header_override: form.getValues('header_override'),
+          proxy: form.getValues('proxy'),
+        },
+        isEditing ? channelId || undefined : undefined
+      )
+    )
     if (response.success && response.data) {
       return response.data
     }
@@ -2446,6 +2491,35 @@ export function ChannelMutateDrawer({
                                   )}
                                 />
                               </>
+                            )}
+
+                            {currentType === CHANNEL_TYPE_COMFYUI_H3 && (
+                              <FormField
+                                control={form.control}
+                                name='comfyui_h3_backend_urls'
+                                render={({ field }) => (
+                                  <FormItem>
+                                    <FormLabel>
+                                      {t('Internal ComfyUI worker URLs')}
+                                    </FormLabel>
+                                    <FormControl>
+                                      <Textarea
+                                        rows={4}
+                                        placeholder={t(
+                                          'Enter one ComfyUI worker base URL per line'
+                                        )}
+                                        {...field}
+                                      />
+                                    </FormControl>
+                                    <FormDescription>
+                                      {t(
+                                        'Requests are distributed across these workers. Base URL remains the fallback.'
+                                      )}
+                                    </FormDescription>
+                                    <FormMessage />
+                                  </FormItem>
+                                )}
+                              />
                             )}
 
                             {/* AI Proxy Library (type 21) */}

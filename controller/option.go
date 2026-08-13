@@ -3,6 +3,7 @@ package controller
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -121,6 +122,143 @@ type OptionUpdateRequest struct {
 	Value any    `json:"value"`
 }
 
+type ComfyUIH3PromptEnhancerUpdateRequest struct {
+	Enabled        bool   `json:"enabled"`
+	ProviderMode   string `json:"provider_mode"`
+	ChannelID      int    `json:"channel_id"`
+	BaseURL        string `json:"base_url"`
+	APIKey         string `json:"api_key"`
+	ClearAPIKey    bool   `json:"clear_api_key"`
+	Model          string `json:"model"`
+	TimeoutSeconds int    `json:"timeout_seconds"`
+	SystemPrompt   string `json:"system_prompt"`
+}
+
+func UpdateComfyUIH3PromptEnhancer(c *gin.Context) {
+	var request ComfyUIH3PromptEnhancerUpdateRequest
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
+		common.ApiErrorMsg(c, "无效的参数")
+		return
+	}
+
+	request.BaseURL = normalizeComfyUIH3PromptEnhancerBaseURL(request.BaseURL)
+	providerMode, err := normalizeComfyUIH3PromptEnhancerProviderMode(request.ProviderMode)
+	if err != nil {
+		common.ApiErrorMsg(c, err.Error())
+		return
+	}
+	request.ProviderMode = providerMode
+	request.APIKey = strings.TrimSpace(request.APIKey)
+	request.Model = strings.TrimSpace(request.Model)
+	request.SystemPrompt = strings.TrimSpace(request.SystemPrompt)
+	current := model_setting.GetComfyUIH3PromptEnhancerSettings()
+	if request.ProviderMode == model_setting.ComfyUIH3PromptEnhancerProviderChannel {
+		// Direct credentials are dormant in channel mode. Keep the existing
+		// values so switching modes does not silently destroy that configuration,
+		// and ignore hidden/stale direct fields submitted by the form.
+		request.BaseURL = current.BaseURL
+		request.APIKey = ""
+		request.ClearAPIKey = false
+	}
+	if request.ProviderMode == model_setting.ComfyUIH3PromptEnhancerProviderDirect && request.ClearAPIKey && request.APIKey != "" {
+		common.ApiErrorMsg(c, "清除 API Key 时不能同时提供新的 API Key")
+		return
+	}
+	validations := []struct {
+		key   string
+		value string
+	}{
+		{"comfyui_h3_prompt_enhancer.timeout_seconds", strconv.Itoa(request.TimeoutSeconds)},
+	}
+	if request.ProviderMode == model_setting.ComfyUIH3PromptEnhancerProviderDirect {
+		validations = append(validations, struct {
+			key   string
+			value string
+		}{"comfyui_h3_prompt_enhancer.base_url", request.BaseURL})
+	}
+	for _, validation := range validations {
+		key, value := validation.key, validation.value
+		if err := validateComfyUIH3PromptEnhancerOption(key, value); err != nil {
+			common.ApiErrorMsg(c, err.Error())
+			return
+		}
+	}
+	if request.Enabled {
+		if request.Model == "" {
+			common.ApiErrorMsg(c, "请先填写提示词增强模型")
+			return
+		}
+		if request.SystemPrompt == "" {
+			common.ApiErrorMsg(c, "请先填写 H3 Context-IR 系统提示词")
+			return
+		}
+		switch request.ProviderMode {
+		case model_setting.ComfyUIH3PromptEnhancerProviderChannel:
+			if err := validateComfyUIH3PromptEnhancerChannel(request.ChannelID, request.Model); err != nil {
+				common.ApiErrorMsg(c, err.Error())
+				return
+			}
+		case model_setting.ComfyUIH3PromptEnhancerProviderDirect:
+			if request.BaseURL == "" {
+				common.ApiErrorMsg(c, "请先填写提示词增强接口地址")
+				return
+			}
+		}
+	}
+
+	apiKey := current.APIKey
+	if request.ProviderMode == model_setting.ComfyUIH3PromptEnhancerProviderDirect {
+		apiKey = resolveComfyUIH3PromptEnhancerAPIKey(request.BaseURL, request.APIKey, request.ClearAPIKey, current)
+	}
+	settings := model_setting.ComfyUIH3PromptEnhancerSettings{
+		Enabled:        request.Enabled,
+		ProviderMode:   request.ProviderMode,
+		ChannelID:      request.ChannelID,
+		BaseURL:        request.BaseURL,
+		APIKey:         apiKey,
+		Model:          request.Model,
+		TimeoutSeconds: request.TimeoutSeconds,
+		SystemPrompt:   request.SystemPrompt,
+	}
+	if err := model.UpdateComfyUIH3PromptEnhancerSettings(settings); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	recordManageAudit(c, "option.update", map[string]interface{}{
+		"key": "comfyui_h3_prompt_enhancer",
+	})
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": ""})
+}
+
+func normalizeComfyUIH3PromptEnhancerProviderMode(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", model_setting.ComfyUIH3PromptEnhancerProviderDirect, "external":
+		return model_setting.ComfyUIH3PromptEnhancerProviderDirect, nil
+	case model_setting.ComfyUIH3PromptEnhancerProviderChannel:
+		return model_setting.ComfyUIH3PromptEnhancerProviderChannel, nil
+	default:
+		return "", fmt.Errorf("提示词增强来源必须是渠道或直连")
+	}
+}
+
+func normalizeComfyUIH3PromptEnhancerBaseURL(value string) string {
+	return strings.TrimRight(strings.TrimSpace(value), "/")
+}
+
+func resolveComfyUIH3PromptEnhancerAPIKey(baseURL, suppliedAPIKey string, clearAPIKey bool, current model_setting.ComfyUIH3PromptEnhancerSettings) string {
+	apiKey := strings.TrimSpace(suppliedAPIKey)
+	if apiKey != "" {
+		return apiKey
+	}
+	if clearAPIKey {
+		return ""
+	}
+	if normalizeComfyUIH3PromptEnhancerBaseURL(baseURL) == normalizeComfyUIH3PromptEnhancerBaseURL(current.BaseURL) {
+		return current.APIKey
+	}
+	return ""
+}
+
 func UpdateOption(c *gin.Context) {
 	var option OptionUpdateRequest
 	err := common.DecodeJson(c.Request.Body, &option)
@@ -152,6 +290,18 @@ func UpdateOption(c *gin.Context) {
 			common.ApiErrorMsg(c, "合规确认字段不允许通过通用设置接口修改")
 			return
 		}
+	}
+	if strings.HasPrefix(option.Key, "comfyui_h3_prompt_enhancer.") {
+		common.ApiErrorMsg(c, "自部署 H3 提示词增强配置必须通过专用设置接口整体保存")
+		return
+	}
+	optionValue, ok := option.Value.(string)
+	if !ok {
+		optionValue = fmt.Sprintf("%v", option.Value)
+	}
+	if err := validateComfyUIH3PromptEnhancerOption(option.Key, optionValue); err != nil {
+		common.ApiErrorMsg(c, err.Error())
+		return
 	}
 	switch option.Key {
 	case "GitHubOAuthEnabled":
@@ -385,4 +535,46 @@ func UpdateOption(c *gin.Context) {
 		"success": true,
 		"message": "",
 	})
+}
+
+func validateComfyUIH3PromptEnhancerOption(key, value string) error {
+	switch key {
+	case "comfyui_h3_prompt_enhancer.base_url":
+		if strings.TrimSpace(value) == "" {
+			return nil
+		}
+		parsed, err := url.Parse(strings.TrimSpace(value))
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return fmt.Errorf("提示词增强接口地址必须是有效的 HTTP 或 HTTPS URL")
+		}
+	case "comfyui_h3_prompt_enhancer.timeout_seconds":
+		timeout, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || timeout < 1 || timeout > 300 {
+			return fmt.Errorf("提示词增强超时时间必须在 1 到 300 秒之间")
+		}
+	case "comfyui_h3_prompt_enhancer.enabled":
+		enabled, err := strconv.ParseBool(strings.TrimSpace(value))
+		if err != nil {
+			return fmt.Errorf("提示词增强启用状态必须是布尔值")
+		}
+		if !enabled {
+			return nil
+		}
+		settings := model_setting.GetComfyUIH3PromptEnhancerSettings()
+		if strings.TrimSpace(settings.Model) == "" {
+			return fmt.Errorf("请先填写提示词增强模型")
+		}
+		if strings.TrimSpace(settings.SystemPrompt) == "" {
+			return fmt.Errorf("请先填写 H3 Context-IR 系统提示词")
+		}
+		switch model_setting.NormalizeComfyUIH3PromptEnhancerProviderMode(settings.ProviderMode) {
+		case model_setting.ComfyUIH3PromptEnhancerProviderChannel:
+			return validateComfyUIH3PromptEnhancerChannel(settings.ChannelID, settings.Model)
+		case model_setting.ComfyUIH3PromptEnhancerProviderDirect:
+			if strings.TrimSpace(settings.BaseURL) == "" {
+				return fmt.Errorf("请先填写提示词增强接口地址")
+			}
+		}
+	}
+	return nil
 }

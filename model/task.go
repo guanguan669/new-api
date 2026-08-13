@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql/driver"
 	"encoding/json"
+	"strconv"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -104,6 +105,11 @@ type TaskPrivateData struct {
 	Key            string `json:"key,omitempty"`
 	UpstreamTaskID string `json:"upstream_task_id,omitempty"` // 上游真实 task ID
 	ResultURL      string `json:"result_url,omitempty"`       // 任务成功后的结果 URL（视频地址等）
+	OutputSeconds  int    `json:"output_seconds,omitempty"`
+	OutputSize     string `json:"output_size,omitempty"`
+	// UpstreamBaseURL pins a self-hosted H3 task to its selected internal GPU
+	// worker for polling and result retrieval. Existing tasks leave it empty.
+	UpstreamBaseURL string `json:"upstream_base_url,omitempty"`
 	// 计费上下文：用于异步退款/差额结算（轮询阶段读取）
 	BillingSource  string              `json:"billing_source,omitempty"`  // "wallet" 或 "subscription"
 	SubscriptionId int                 `json:"subscription_id,omitempty"` // 订阅 ID，用于订阅退款
@@ -335,6 +341,34 @@ func HasUnfinishedSyncTasks() bool {
 	return err == nil && id != 0
 }
 
+// CountActiveTasksByChannel returns the number of submitted, queued, or
+// running async tasks for each requested channel. The query is deliberately
+// platform-agnostic because channel IDs uniquely identify H3 instances.
+func CountActiveTasksByChannel(channelIDs []int) (map[int]int64, error) {
+	counts := make(map[int]int64, len(channelIDs))
+	if len(channelIDs) == 0 {
+		return counts, nil
+	}
+	type channelTaskCount struct {
+		ChannelID int   `gorm:"column:channel_id"`
+		Count     int64 `gorm:"column:task_count"`
+	}
+	var rows []channelTaskCount
+	err := DB.Model(&Task{}).
+		Select("channel_id, COUNT(*) AS task_count").
+		Where("channel_id IN ?", channelIDs).
+		Where("status IN ?", []TaskStatus{TaskStatusNotStart, TaskStatusSubmitted, TaskStatusQueued, TaskStatusInProgress}).
+		Group("channel_id").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		counts[row.ChannelID] = row.Count
+	}
+	return counts, nil
+}
+
 func GetByTaskId(userId int, taskId string) (*Task, bool, error) {
 	if taskId == "" {
 		return nil, false, nil
@@ -523,5 +557,13 @@ func (t *Task) ToOpenAIVideo() *dto.OpenAIVideo {
 	openAIVideo.CreatedAt = t.CreatedAt
 	openAIVideo.CompletedAt = t.UpdatedAt
 	openAIVideo.SetMetadata("url", t.GetResultURL())
+	if t.Status == TaskStatusSuccess {
+		if t.PrivateData.OutputSeconds > 0 {
+			openAIVideo.Seconds = strconv.Itoa(t.PrivateData.OutputSeconds)
+		}
+		if t.PrivateData.OutputSize != "" {
+			openAIVideo.Size = t.PrivateData.OutputSize
+		}
+	}
 	return openAIVideo
 }

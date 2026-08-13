@@ -208,6 +208,57 @@ func GetRandomSatisfiedChannel(group string, model string, retry int, requestPat
 	return nil, errors.New("channel not found")
 }
 
+// GetSatisfiedChannelsAtPriority returns all enabled candidates at the same
+// priority level that GetRandomSatisfiedChannel would use for this retry. It is
+// used by H3 load-aware scheduling after the normal routing constraints have
+// already been applied.
+func GetSatisfiedChannelsAtPriority(group string, modelName string, retry int, requestPath string) ([]*Channel, error) {
+	if !common.MemoryCacheEnabled {
+		return getSatisfiedChannelsAtPriorityFromDB(group, modelName, retry, requestPath)
+	}
+
+	channelSyncLock.RLock()
+	defer channelSyncLock.RUnlock()
+	channelIDs := filterChannelsByRequestPathAndModel(group2model2channels[group][modelName], requestPath, modelName)
+	if len(channelIDs) == 0 {
+		normalizedModel := ratio_setting.FormatMatchingModelName(modelName)
+		channelIDs = filterChannelsByRequestPathAndModel(group2model2channels[group][normalizedModel], requestPath, modelName)
+	}
+	if len(channelIDs) == 0 {
+		return nil, nil
+	}
+	priorities := make([]int, 0)
+	seenPriorities := make(map[int]struct{})
+	for _, channelID := range channelIDs {
+		channel, ok := channelsIDM[channelID]
+		if !ok {
+			return nil, fmt.Errorf("channel #%d is missing from cache", channelID)
+		}
+		priority := int(channel.GetPriority())
+		if _, exists := seenPriorities[priority]; exists {
+			continue
+		}
+		seenPriorities[priority] = struct{}{}
+		priorities = append(priorities, priority)
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(priorities)))
+	if retry < 0 {
+		retry = 0
+	}
+	if retry >= len(priorities) {
+		retry = len(priorities) - 1
+	}
+	targetPriority := int64(priorities[retry])
+	candidates := make([]*Channel, 0, len(channelIDs))
+	for _, channelID := range channelIDs {
+		channel := channelsIDM[channelID]
+		if channel.GetPriority() == targetPriority {
+			candidates = append(candidates, channel)
+		}
+	}
+	return candidates, nil
+}
+
 // filterChannelsByRequestPathAndModel restricts candidates by request path and
 // model. Only Advanced Custom (type 58) channels are path-checked: they are kept
 // only when one of their configured routes matches requestPath and model. All

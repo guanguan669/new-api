@@ -174,6 +174,17 @@ export const CHANNEL_TYPE_CONFIGS: Record<number, ChannelTypeConfig> = {
       other: 'Workflow ID is stored in channel settings',
     },
   },
+  63: {
+    id: 63,
+    name: CHANNEL_TYPES[63],
+    icon: 'OpenAI',
+    defaultBaseUrl: 'http://36.103.234.105:5900',
+    hints: {
+      baseUrl: 'ComfyUI server base URL',
+      key: 'No upstream API key is required; use a placeholder value',
+      models: 'minimax_h3',
+    },
+  },
 }
 
 /**

@@ -20,6 +20,7 @@ import { z } from 'zod'
 
 import {
   CHANNEL_TYPE_NEW_API,
+  CHANNEL_TYPE_COMFYUI_H3,
   CHANNEL_TYPE_RUNNINGHUB,
   CHANNEL_STATUS,
   ERROR_MESSAGES,
@@ -69,6 +70,35 @@ function isOptionalProxyURL(value: string | undefined): boolean {
   } catch {
     return false
   }
+}
+
+function parseComfyUIH3BackendURLs(value: string | undefined): string[] {
+  return [
+    ...new Set(
+      String(value || '')
+        .split(/\r?\n/)
+        .map((url) => url.trim().replace(/\/+$/, ''))
+        .filter(Boolean)
+    ),
+  ]
+}
+
+function isOptionalComfyUIH3BackendURLs(value: string | undefined): boolean {
+  return parseComfyUIH3BackendURLs(value).every((url) => {
+    try {
+      const parsedURL = new URL(url)
+      return (
+        (parsedURL.protocol === 'http:' || parsedURL.protocol === 'https:') &&
+        Boolean(parsedURL.hostname) &&
+        parsedURL.username === '' &&
+        parsedURL.password === '' &&
+        parsedURL.search === '' &&
+        parsedURL.hash === ''
+      )
+    } catch {
+      return false
+    }
+  })
 }
 
 export const HTTP_PROTOCOL_AUTO = 'auto'
@@ -271,6 +301,7 @@ export const channelFormSchema = z
     azure_responses_version: z.string().optional(), // Azure specific
     runninghub_workflow_id: z.string().optional(), // RunningHub image-to-video workflow
     runninghub_text_workflow_id: z.string().optional(), // RunningHub text-to-video workflow
+    comfyui_h3_backend_urls: z.string().optional(),
     // Field passthrough controls (stored in settings JSON)
     allow_service_tier: z.boolean().optional(), // OpenAI/Anthropic
     disable_store: z.boolean().optional(), // OpenAI only
@@ -287,7 +318,9 @@ export const channelFormSchema = z
   })
   .superRefine((data, ctx) => {
     if (
-      [3, 8, 36, 45, CHANNEL_TYPE_NEW_API].includes(data.type) &&
+      [3, 8, 36, 45, CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_COMFYUI_H3].includes(
+        data.type
+      ) &&
       !data.base_url?.trim()
     ) {
       addRequiredIssue(
@@ -354,6 +387,17 @@ export const channelFormSchema = z
         ctx,
         'runninghub_text_workflow_id',
         'RunningHub text-to-video Workflow ID is required'
+      )
+    }
+
+    if (
+      data.type === CHANNEL_TYPE_COMFYUI_H3 &&
+      !isOptionalComfyUIH3BackendURLs(data.comfyui_h3_backend_urls)
+    ) {
+      addRequiredIssue(
+        ctx,
+        'comfyui_h3_backend_urls',
+        'Each ComfyUI worker URL must be a valid HTTP(S) base URL'
       )
     }
 
@@ -466,6 +510,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   azure_responses_version: '',
   runninghub_workflow_id: '',
   runninghub_text_workflow_id: '',
+  comfyui_h3_backend_urls: '',
   // Field passthrough controls
   allow_service_tier: false,
   disable_store: false,
@@ -545,6 +590,7 @@ export function transformChannelToFormDefaults(
   let advancedCustom = ''
   let runninghubWorkflowId = ''
   let runninghubTextWorkflowId = ''
+  let comfyUIH3BackendURLs = ''
 
   if (channel.settings) {
     try {
@@ -572,6 +618,11 @@ export function transformChannelToFormDefaults(
         : ''
       runninghubWorkflowId = parsed.runninghub_workflow_id || ''
       runninghubTextWorkflowId = parsed.runninghub_text_workflow_id || ''
+      comfyUIH3BackendURLs = Array.isArray(parsed.comfyui_h3_backend_urls)
+        ? parsed.comfyui_h3_backend_urls
+            .filter((url: unknown) => typeof url === 'string')
+            .join('\n')
+        : ''
       if (parsed.advanced_custom) {
         advancedCustom = stringifyAdvancedCustomConfig(parsed.advanced_custom)
       }
@@ -628,6 +679,7 @@ export function transformChannelToFormDefaults(
     advanced_custom: advancedCustom,
     runninghub_workflow_id: runninghubWorkflowId,
     runninghub_text_workflow_id: runninghubTextWorkflowId,
+    comfyui_h3_backend_urls: comfyUIH3BackendURLs,
   }
 }
 
@@ -714,6 +766,19 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
   } else {
     delete settingsObj.runninghub_workflow_id
     delete settingsObj.runninghub_text_workflow_id
+  }
+
+  if (formData.type === CHANNEL_TYPE_COMFYUI_H3) {
+    const backendURLs = parseComfyUIH3BackendURLs(
+      formData.comfyui_h3_backend_urls
+    )
+    if (backendURLs.length > 0) {
+      settingsObj.comfyui_h3_backend_urls = backendURLs
+    } else {
+      delete settingsObj.comfyui_h3_backend_urls
+    }
+  } else {
+    delete settingsObj.comfyui_h3_backend_urls
   }
 
   // Field passthrough controls:

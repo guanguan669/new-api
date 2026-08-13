@@ -146,6 +146,45 @@ func GetChannel(group string, model string, retry int, requestPath string) (*Cha
 	return &channel, err
 }
 
+func getSatisfiedChannelsAtPriorityFromDB(group string, modelName string, retry int, requestPath string) ([]*Channel, error) {
+	channelQuery, err := getChannelQuery(group, modelName, retry)
+	if err != nil {
+		return nil, err
+	}
+	var abilities []Ability
+	if err := channelQuery.Order("weight DESC").Find(&abilities).Error; err != nil {
+		return nil, err
+	}
+	abilities = filterAbilitiesByRequestPathAndModel(abilities, requestPath, modelName)
+	if len(abilities) == 0 {
+		return nil, nil
+	}
+	channelIDs := make([]int, 0, len(abilities))
+	seen := make(map[int]struct{}, len(abilities))
+	for _, ability := range abilities {
+		if _, exists := seen[ability.ChannelId]; exists {
+			continue
+		}
+		seen[ability.ChannelId] = struct{}{}
+		channelIDs = append(channelIDs, ability.ChannelId)
+	}
+	var channels []*Channel
+	if err := DB.Where("id IN ?", channelIDs).Find(&channels).Error; err != nil {
+		return nil, err
+	}
+	byID := make(map[int]*Channel, len(channels))
+	for _, channel := range channels {
+		byID[channel.Id] = channel
+	}
+	ordered := make([]*Channel, 0, len(channelIDs))
+	for _, channelID := range channelIDs {
+		if channel := byID[channelID]; channel != nil {
+			ordered = append(ordered, channel)
+		}
+	}
+	return ordered, nil
+}
+
 // filterAbilitiesByRequestPathAndModel restricts candidates by request path and
 // model for the DB (non-memory-cache) selection path. Only Advanced Custom
 // (type 58) channels are path-checked: kept only when one of their routes matches

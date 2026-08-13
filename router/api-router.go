@@ -196,6 +196,8 @@ func SetApiRouter(router *gin.Engine) {
 		{
 			optionRoute.GET("/", controller.GetOptions)
 			optionRoute.PUT("/", controller.UpdateOption)
+			optionRoute.PUT("/comfyui-h3-prompt-enhancer", controller.UpdateComfyUIH3PromptEnhancer)
+			optionRoute.GET("/comfyui-h3-prompt-enhancer/channels", controller.GetComfyUIH3PromptEnhancerChannels)
 			optionRoute.POST("/payment_compliance", controller.ConfirmPaymentCompliance)
 			optionRoute.GET("/channel_affinity_cache", controller.GetChannelAffinityCacheStats)
 			optionRoute.DELETE("/channel_affinity_cache", controller.ClearChannelAffinityCache)

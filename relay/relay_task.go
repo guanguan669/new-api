@@ -24,15 +24,22 @@ import (
 )
 
 type TaskSubmitResult struct {
-	UpstreamTaskID string
-	TaskData       []byte
-	Platform       constant.TaskPlatform
-	Quota          int
+	UpstreamTaskID     string
+	TaskData           []byte
+	Platform           constant.TaskPlatform
+	Quota              int
+	OutputSeconds      int
+	OutputSize         string
+	SelectedBackendURL string
 	//PerCallPrice   types.PriceData
 }
 
 type taskPriceDataOverrider interface {
 	OverridePriceData(c *gin.Context, info *relaycommon.RelayInfo) (hosttypes.PriceData, bool, error)
+}
+
+type taskSubmissionAborter interface {
+	AbortTaskSubmission()
 }
 
 // ResolveOriginTask 处理基于已有任务的提交（remix / continuation）：
@@ -160,8 +167,26 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		return nil, service.TaskErrorWrapperLocal(fmt.Errorf("invalid api platform: %s", platform), "invalid_api_platform", http.StatusBadRequest)
 	}
 	adaptor.Init(info)
+	submitSucceeded := false
+	if aborter, ok := adaptor.(taskSubmissionAborter); ok {
+		defer func() {
+			if !submitSucceeded {
+				aborter.AbortTaskSubmission()
+			}
+		}()
+	}
 	if taskErr := adaptor.ValidateRequestAndSetAction(c, info); taskErr != nil {
 		return nil, taskErr
+	}
+
+	outputSeconds := 0
+	outputSize := ""
+	if metadataProvider, ok := adaptor.(channel.TaskOutputMetadataProvider); ok {
+		var err error
+		outputSeconds, outputSize, err = metadataProvider.GetTaskOutputMetadata(c, info)
+		if err != nil {
+			return nil, service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+		}
 	}
 
 	// 2. 确定模型名称
@@ -271,12 +296,22 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		}
 	}
 
-	return &TaskSubmitResult{
+	result := &TaskSubmitResult{
 		UpstreamTaskID: upstreamTaskID,
 		TaskData:       taskData,
 		Platform:       platform,
 		Quota:          finalQuota,
-	}, nil
+		OutputSeconds:  outputSeconds,
+		OutputSize:     outputSize,
+		SelectedBackendURL: func() string {
+			if info.TaskRelayInfo == nil {
+				return ""
+			}
+			return info.SelectedBackendURL
+		}(),
+	}
+	submitSucceeded = true
+	return result, nil
 }
 
 // recalcQuotaFromRatios 根据 adjustedRatios 重新计算 quota。
@@ -434,14 +469,49 @@ func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *d
 	}
 
 	// 通用 TaskDto 格式
+	taskDto := TaskModel2Dto(originTask)
+	if err := addTaskOutputMetadata(originTask, taskDto); err != nil {
+		taskResp = service.TaskErrorWrapper(err, "marshal_response_failed", http.StatusInternalServerError)
+		return
+	}
 	respBody, err = common.Marshal(dto.TaskResponse[any]{
 		Code: "success",
-		Data: TaskModel2Dto(originTask),
+		Data: taskDto,
 	})
 	if err != nil {
 		taskResp = service.TaskErrorWrapper(err, "marshal_response_failed", http.StatusInternalServerError)
 	}
 	return
+}
+
+// addTaskOutputMetadata adds normalized output fields to the public task data.
+func addTaskOutputMetadata(task *model.Task, taskDto *dto.TaskDto) error {
+	if task.Status != model.TaskStatusSuccess {
+		return nil
+	}
+	if task.PrivateData.OutputSeconds <= 0 && task.PrivateData.OutputSize == "" {
+		return nil
+	}
+
+	data := map[string]any{}
+	if common.GetJsonType(taskDto.Data) == "object" {
+		if err := common.Unmarshal(taskDto.Data, &data); err != nil {
+			return err
+		}
+	}
+	if task.PrivateData.OutputSeconds > 0 {
+		data["seconds"] = task.PrivateData.OutputSeconds
+	}
+	if task.PrivateData.OutputSize != "" {
+		data["size"] = task.PrivateData.OutputSize
+	}
+
+	mergedData, err := common.Marshal(data)
+	if err != nil {
+		return err
+	}
+	taskDto.Data = mergedData
+	return nil
 }
 
 // tryRealtimeFetch 尝试从上游实时拉取 Gemini/Vertex 任务状态。

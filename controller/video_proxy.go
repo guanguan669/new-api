@@ -133,17 +133,26 @@ func VideoProxy(c *gin.Context) {
 		return
 	}
 
-	var validateErr error
-	if proxy == "" {
-		validateErr = service.ValidateSSRFProtectedFetchURL(videoURL)
+	if isTrustedComfyUIH3ResultURL(channel, task.PrivateData.UpstreamBaseURL, videoURL) {
+		// The URL was generated from a root-configured ComfyUI channel and is
+		// constrained to its /view output endpoint. It may use a private host or
+		// a non-default port, so keep the SSRF exception limited to this origin.
+		if proxy == "" {
+			client = service.GetHttpClient()
+		}
 	} else {
-		fetchSetting := system_setting.GetFetchSetting()
-		validateErr = common.ValidateURLWithFetchSetting(videoURL, fetchSetting.EnableSSRFProtection, fetchSetting.AllowPrivateIp, fetchSetting.DomainFilterMode, fetchSetting.IpFilterMode, fetchSetting.DomainList, fetchSetting.IpList, fetchSetting.AllowedPorts, fetchSetting.ApplyIPFilterForDomain)
-	}
-	if validateErr != nil {
-		logger.LogError(c.Request.Context(), fmt.Sprintf("Video URL blocked for task %s: %v", taskID, validateErr))
-		videoProxyError(c, http.StatusForbidden, "server_error", fmt.Sprintf("request blocked: %v", validateErr))
-		return
+		var validateErr error
+		if proxy == "" {
+			validateErr = service.ValidateSSRFProtectedFetchURL(videoURL)
+		} else {
+			fetchSetting := system_setting.GetFetchSetting()
+			validateErr = common.ValidateURLWithFetchSetting(videoURL, fetchSetting.EnableSSRFProtection, fetchSetting.AllowPrivateIp, fetchSetting.DomainFilterMode, fetchSetting.IpFilterMode, fetchSetting.DomainList, fetchSetting.IpList, fetchSetting.AllowedPorts, fetchSetting.ApplyIPFilterForDomain)
+		}
+		if validateErr != nil {
+			logger.LogError(c.Request.Context(), fmt.Sprintf("Video URL blocked for task %s: %v", taskID, validateErr))
+			videoProxyError(c, http.StatusForbidden, "server_error", fmt.Sprintf("request blocked: %v", validateErr))
+			return
+		}
 	}
 
 	req.URL, err = url.Parse(videoURL)
@@ -179,6 +188,51 @@ func VideoProxy(c *gin.Context) {
 	if _, err = io.Copy(c.Writer, resp.Body); err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Failed to stream video content: %s", err.Error()))
 	}
+}
+
+func isTrustedComfyUIH3ResultURL(channel *model.Channel, selectedWorkerURL, rawURL string) bool {
+	if channel == nil || channel.Type != constant.ChannelTypeComfyUIH3 {
+		return false
+	}
+	resultURL, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || resultURL.Scheme == "" || resultURL.Host == "" || resultURL.User != nil || resultURL.Fragment != "" {
+		return false
+	}
+	if strings.TrimSpace(selectedWorkerURL) != "" && !channel.IsConfiguredComfyUIH3WorkerURL(selectedWorkerURL) {
+		return false
+	}
+	configuredOrigins := []string{channel.GetBaseURL()}
+	configuredOrigins = append(configuredOrigins, channel.GetOtherSettings().ComfyUIH3BackendURLs...)
+	trustedOrigin := false
+	for _, configuredOrigin := range configuredOrigins {
+		configuredURL, parseErr := url.Parse(strings.TrimSpace(configuredOrigin))
+		if parseErr != nil || configuredURL.Scheme == "" || configuredURL.Host == "" || configuredURL.User != nil {
+			continue
+		}
+		expectedPath := strings.TrimRight(configuredURL.Path, "/") + "/view"
+		if strings.EqualFold(resultURL.Scheme, configuredURL.Scheme) && strings.EqualFold(resultURL.Host, configuredURL.Host) && resultURL.Path == expectedPath {
+			trustedOrigin = true
+			break
+		}
+	}
+	if !trustedOrigin {
+		return false
+	}
+	allowedQueryKeys := map[string]bool{"filename": true, "subfolder": true, "type": true}
+	query := resultURL.Query()
+	for key, values := range query {
+		if !allowedQueryKeys[key] || len(values) != 1 {
+			return false
+		}
+	}
+	filename := strings.TrimSpace(query.Get("filename"))
+	if filename == "" || strings.Contains(filename, "..") || strings.Contains(query.Get("subfolder"), "..") {
+		return false
+	}
+	if fileType := strings.TrimSpace(query.Get("type")); fileType != "" && fileType != "output" {
+		return false
+	}
+	return true
 }
 
 func writeVideoDataURL(c *gin.Context, dataURL string) error {

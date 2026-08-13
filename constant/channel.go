@@ -60,6 +60,7 @@ const (
 	ChannelTypeNewAPI         = 60
 	ChannelTypeKuocai         = 61
 	ChannelTypeRunningHub     = 62
+	ChannelTypeComfyUIH3      = 63
 	ChannelTypeDummy          // this one is only for count, do not add any channel after this
 
 )
@@ -128,6 +129,7 @@ var ChannelBaseURLs = []string{
 	"",                                          //60
 	"https://api.kuocai.net",                    //61
 	"https://www.runninghub.cn",                 //62
+	"http://36.103.234.105:5900",                //63
 }
 
 var ChannelTypeNames = map[int]string{
@@ -190,6 +192,7 @@ var ChannelTypeNames = map[int]string{
 	ChannelTypeNewAPI:         "New API",
 	ChannelTypeKuocai:         "Kuocai",
 	ChannelTypeRunningHub:     "RunningHub",
+	ChannelTypeComfyUIH3:      "ComfyUI H3",
 }
 
 func GetChannelTypeName(channelType int) string {

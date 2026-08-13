@@ -105,6 +105,9 @@ func Distribute() func(c *gin.Context) {
 				if preferredChannelID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, usingGroup); found {
 					affinityUsable := false
 					preferred, err := model.CacheGetChannel(preferredChannelID)
+					if err == nil && preferred != nil && preferred.Type == constant.ChannelTypeComfyUIH3 {
+						preferred = nil
+					}
 					if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled &&
 						channelSupportsRequestPath(preferred, c.Request.URL.Path, modelRequest.Model) {
 						if usingGroup == "auto" {
@@ -160,11 +163,14 @@ func Distribute() func(c *gin.Context) {
 					}
 				}
 			}
+			if channel != nil && channel.Type == constant.ChannelTypeComfyUIH3 {
+				service.IgnoreChannelAffinityForRequest(c)
+			}
 		}
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
 		SetupContextForSelectedChannel(c, channel, modelRequest.Model)
 		c.Next()
-		if channel != nil && c.Writer != nil && c.Writer.Status() < http.StatusBadRequest {
+		if channel != nil && channel.Type != constant.ChannelTypeComfyUIH3 && c.Writer != nil && c.Writer.Status() < http.StatusBadRequest {
 			service.RecordChannelAffinity(c, channel.Id)
 		}
 	}

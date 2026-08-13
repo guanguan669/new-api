@@ -358,6 +358,10 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 		return fetchRunningHubUpstreamModelIDs(channel, baseURL)
 	}
 
+	if channel.Type == constant.ChannelTypeComfyUIH3 {
+		return fetchComfyUIH3UpstreamModelIDs(channel, baseURL)
+	}
+
 	if channel.Type == constant.ChannelTypeGemini {
 		key, _, apiErr := channel.GetNextEnabledKey()
 		if apiErr != nil {
@@ -459,6 +463,17 @@ func fetchRunningHubUpstreamModelIDs(channel *model.Channel, baseURL string) ([]
 		if err := validateRunningHubAPIFormatResponseForMode(body, workflow.mode); err != nil {
 			return nil, sanitizeFetchModelsError(err, key)
 		}
+	}
+	return []string{"minimax_h3"}, nil
+}
+
+func fetchComfyUIH3UpstreamModelIDs(channel *model.Channel, baseURL string) ([]string, error) {
+	if strings.TrimSpace(baseURL) != "" && strings.TrimSpace(baseURL) != strings.TrimSpace(channel.GetBaseURL()) {
+		if err := validateComfyUIH3ChannelCapabilities(context.Background(), channel, baseURL); err != nil {
+			return nil, err
+		}
+	} else if err := validateComfyUIH3ChannelWorkers(context.Background(), channel); err != nil {
+		return nil, err
 	}
 	return []string{"minimax_h3"}, nil
 }

@@ -87,6 +87,9 @@ func ChannelType2APIType(channelType int) (int, bool) {
 	case constant.ChannelTypeRunningHub:
 		// RunningHub H3 uses an OpenAI-compatible video entrypoint in this service.
 		apiType = constant.APITypeOpenAI
+	case constant.ChannelTypeComfyUIH3:
+		// Direct ComfyUI H3 uses an OpenAI-compatible video entrypoint in this service.
+		apiType = constant.APITypeOpenAI
 	}
 	if apiType == -1 {
 		return constant.APITypeOpenAI, false

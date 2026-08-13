@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"net/url"
 	"strings"
 	"sync"
 
@@ -980,6 +981,24 @@ func (channel *Channel) ValidateSettings() error {
 			return fmt.Errorf("RunningHub text-to-video workflow ID cannot be empty")
 		}
 	}
+	if channel.Type == constant.ChannelTypeComfyUIH3 {
+		seenWorkerURLs := make(map[string]struct{}, len(channelOtherSettings.ComfyUIH3BackendURLs))
+		for _, rawWorkerURL := range channelOtherSettings.ComfyUIH3BackendURLs {
+			workerURL := strings.TrimSpace(rawWorkerURL)
+			if workerURL == "" {
+				return fmt.Errorf("ComfyUI H3 worker URL cannot be empty")
+			}
+			parsedURL, err := url.Parse(workerURL)
+			if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || parsedURL.Host == "" || parsedURL.User != nil || parsedURL.RawQuery != "" || parsedURL.Fragment != "" {
+				return fmt.Errorf("invalid ComfyUI H3 worker URL: %s", workerURL)
+			}
+			canonicalURL := strings.TrimRight(parsedURL.String(), "/")
+			if _, exists := seenWorkerURLs[canonicalURL]; exists {
+				return fmt.Errorf("duplicate ComfyUI H3 worker URL: %s", workerURL)
+			}
+			seenWorkerURLs[canonicalURL] = struct{}{}
+		}
+	}
 	if channel.Type == constant.ChannelTypeAdvancedCustom {
 		if channelOtherSettings.AdvancedCustom == nil {
 			return fmt.Errorf("advanced_custom is required")
@@ -1040,6 +1059,39 @@ func (channel *Channel) SetOtherSettings(setting dto.ChannelOtherSettings) {
 		return
 	}
 	channel.OtherSettings = string(settingBytes)
+}
+
+// IsConfiguredComfyUIH3WorkerURL reports whether rawURL belongs to this
+// channel's operator-configured H3 worker pool. Task private data can contain
+// a previously selected worker, but it must never expand the trusted origin
+// set used for polling or result proxying.
+func (channel *Channel) IsConfiguredComfyUIH3WorkerURL(rawURL string) bool {
+	if channel == nil || channel.Type != constant.ChannelTypeComfyUIH3 {
+		return false
+	}
+	canonicalURL := canonicalComfyUIH3WorkerURL(rawURL)
+	if canonicalURL == "" {
+		return false
+	}
+	if canonicalURL == canonicalComfyUIH3WorkerURL(channel.GetBaseURL()) {
+		return true
+	}
+	for _, workerURL := range channel.GetOtherSettings().ComfyUIH3BackendURLs {
+		if canonicalURL == canonicalComfyUIH3WorkerURL(workerURL) {
+			return true
+		}
+	}
+	return false
+}
+
+func canonicalComfyUIH3WorkerURL(rawURL string) string {
+	parsedURL, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || parsedURL.Host == "" || parsedURL.User != nil || parsedURL.RawQuery != "" || parsedURL.Fragment != "" {
+		return ""
+	}
+	parsedURL.Path = strings.TrimRight(parsedURL.Path, "/")
+	parsedURL.RawPath = ""
+	return strings.TrimRight(parsedURL.String(), "/")
 }
 
 func (channel *Channel) GetParamOverride() map[string]interface{} {

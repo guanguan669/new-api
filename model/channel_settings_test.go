@@ -106,3 +106,22 @@ func TestRunningHubChannelRequiresWorkflowID(t *testing.T) {
 	channel.SetOtherSettings(dto.ChannelOtherSettings{RunningHubWorkflowID: "wf-image", RunningHubTextWorkflowID: "wf-text"})
 	require.NoError(t, channel.ValidateSettings())
 }
+
+func TestComfyUIH3ChannelWorkerURLSettings(t *testing.T) {
+	baseURL := "http://fallback.internal:5900"
+	channel := &Channel{Type: constant.ChannelTypeComfyUIH3, BaseURL: &baseURL}
+	channel.SetOtherSettings(dto.ChannelOtherSettings{ComfyUIH3BackendURLs: []string{
+		"http://worker-a.internal:5900",
+		"https://worker-b.example/comfy",
+	}})
+	require.NoError(t, channel.ValidateSettings())
+
+	channel.SetOtherSettings(dto.ChannelOtherSettings{ComfyUIH3BackendURLs: []string{"not-a-url"}})
+	require.ErrorContains(t, channel.ValidateSettings(), "invalid ComfyUI H3 worker URL")
+
+	channel.SetOtherSettings(dto.ChannelOtherSettings{ComfyUIH3BackendURLs: []string{
+		"http://worker-a.internal:5900",
+		"http://worker-a.internal:5900/",
+	}})
+	require.ErrorContains(t, channel.ValidateSettings(), "duplicate ComfyUI H3 worker URL")
+}

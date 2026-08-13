@@ -39,6 +39,32 @@ export type UpdateOptionResponse = {
   message: string
 }
 
+export type UpdateComfyUIH3PromptEnhancerRequest = {
+  enabled: boolean
+  provider_mode: 'channel' | 'direct'
+  channel_id: number
+  base_url: string
+  api_key: string
+  clear_api_key: boolean
+  model: string
+  timeout_seconds: number
+  system_prompt: string
+}
+
+export type ComfyUIH3PromptEnhancerChannel = {
+  id: number
+  name: string
+  type: number
+  status: number
+  models: string[]
+}
+
+export type ComfyUIH3PromptEnhancerChannelsResponse = {
+  success: boolean
+  message: string
+  data: ComfyUIH3PromptEnhancerChannel[]
+}
+
 export type ConfirmPaymentComplianceResponse = {
   success: boolean
   message: string
@@ -206,6 +232,14 @@ export type ModelSettings = {
   'claude.thinking_adapter_budget_tokens_percentage': number
   'grok.violation_deduction_enabled': boolean
   'grok.violation_deduction_amount': number
+  'comfyui_h3_prompt_enhancer.enabled': boolean
+  'comfyui_h3_prompt_enhancer.provider_mode'?: 'channel' | 'direct'
+  'comfyui_h3_prompt_enhancer.channel_id'?: number
+  'comfyui_h3_prompt_enhancer.base_url': string
+  'comfyui_h3_prompt_enhancer.api_key': string
+  'comfyui_h3_prompt_enhancer.model': string
+  'comfyui_h3_prompt_enhancer.timeout_seconds': number
+  'comfyui_h3_prompt_enhancer.system_prompt': string
   ModelPrice: string
   ModelRatio: string
   CacheRatio: string

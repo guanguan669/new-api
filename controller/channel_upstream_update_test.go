@@ -320,6 +320,121 @@ func TestFetchModelsAdvancedCustomEditPreviewUsesSavedKeyAndExplicitClears(t *te
 	require.Empty(t, headers.Get("X-Saved"))
 }
 
+func TestFetchModelsOrdinaryEditPreviewUsesFormOverridesAndSavedKey(t *testing.T) {
+	tests := []struct {
+		name          string
+		requestKey    string
+		expectedKey   string
+		unexpectedKey string
+	}{
+		{
+			name:          "empty form key reuses saved key",
+			expectedKey:   "saved-openai-key",
+			unexpectedKey: "form-openai-key",
+		},
+		{
+			name:          "non-empty form key overrides saved key",
+			requestKey:    "form-openai-key\nignored-second-key",
+			expectedKey:   "form-openai-key",
+			unexpectedKey: "saved-openai-key",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			db := setupModelListControllerTestDB(t)
+			receivedHeaders := make(chan http.Header, 1)
+			receivedPath := make(chan string, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				receivedHeaders <- r.Header.Clone()
+				receivedPath <- r.URL.Path
+				_, _ = w.Write([]byte(`{"data":[{"id":"edited-openai-model"}]}`))
+			}))
+			defer server.Close()
+
+			savedBaseURL := "http://127.0.0.1:1"
+			savedHeaderOverride := `{"X-Saved":"must-not-be-sent"}`
+			savedChannel := &model.Channel{
+				Type:           constant.ChannelTypeOpenAI,
+				Key:            "saved-openai-key",
+				BaseURL:        &savedBaseURL,
+				HeaderOverride: &savedHeaderOverride,
+				Name:           "saved openai channel",
+			}
+			savedChannel.SetSetting(dto.ChannelSettings{Proxy: "http://127.0.0.1:1"})
+			require.NoError(t, db.Create(savedChannel).Error)
+
+			previewBaseURL := server.URL + "/"
+			previewHeaderOverride := `{"X-Preview":"preview-{api_key}"}`
+			emptyProxy := ""
+			body, err := common.Marshal(fetchModelsRequest{
+				ChannelID:      savedChannel.Id,
+				BaseURL:        &previewBaseURL,
+				Type:           constant.ChannelTypeOpenAI,
+				Key:            test.requestKey,
+				HeaderOverride: &previewHeaderOverride,
+				Proxy:          &emptyProxy,
+			})
+			require.NoError(t, err)
+
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/api/channel/fetch_models", bytes.NewReader(body))
+			ctx.Request.Header.Set("Content-Type", "application/json")
+			FetchModels(ctx)
+
+			require.Equal(t, http.StatusOK, recorder.Code)
+			require.JSONEq(t, `{"success":true,"message":"","data":["edited-openai-model"]}`, recorder.Body.String())
+			require.Equal(t, "/v1/models", <-receivedPath)
+			headers := <-receivedHeaders
+			require.Equal(t, "Bearer "+test.expectedKey, headers.Get("Authorization"))
+			require.Equal(t, "preview-"+test.expectedKey, headers.Get("X-Preview"))
+			require.Empty(t, headers.Get("X-Saved"))
+			require.NotContains(t, recorder.Body.String(), test.expectedKey)
+			require.NotContains(t, recorder.Body.String(), test.unexpectedKey)
+		})
+	}
+}
+
+func TestBuildOrdinaryModelPreviewChannelRejectsTypeMismatchAndMultipleURLs(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	savedBaseURL := "https://api.openai.com"
+	savedChannel := &model.Channel{
+		Type:    constant.ChannelTypeOpenAI,
+		Key:     "saved-key",
+		BaseURL: &savedBaseURL,
+		Name:    "saved openai channel",
+	}
+	require.NoError(t, db.Create(savedChannel).Error)
+
+	_, err := buildOrdinaryModelPreviewChannel(fetchModelsRequest{
+		ChannelID: savedChannel.Id,
+		Type:      constant.ChannelTypeAnthropic,
+	})
+	require.ErrorContains(t, err, "channel type mismatch")
+
+	_, err = buildOrdinaryModelPreviewChannel(fetchModelsRequest{
+		Type: len(constant.ChannelBaseURLs),
+		Key:  "preview-key",
+	})
+	require.ErrorContains(t, err, "invalid channel type")
+
+	for _, invalidBaseURL := range []string{
+		"https://api.openai.com,https://example.com",
+		"https://api.openai.com，https://example.com",
+	} {
+		invalidBaseURL := invalidBaseURL
+		t.Run(invalidBaseURL, func(t *testing.T) {
+			_, err := buildOrdinaryModelPreviewChannel(fetchModelsRequest{
+				BaseURL: &invalidBaseURL,
+				Type:    constant.ChannelTypeOpenAI,
+				Key:     "preview-key",
+			})
+			require.ErrorContains(t, err, "base_url must be a single URL")
+		})
+	}
+}
+
 func TestFailedAdvancedCustomDetectionDoesNotStageFullRemoval(t *testing.T) {
 	db := setupModelListControllerTestDB(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

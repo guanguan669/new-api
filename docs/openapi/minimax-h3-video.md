@@ -33,14 +33,14 @@ export API_KEY="sk-xxxxxxxxxxxxxxxx"
 4. status=completed 后读取 metadata.url，或调用 /content 下载 MP4
 ```
 
-`minimax_h3` 根据有没有参考图片自动选择模式：不传图片为文生视频；传入一张或多张图片为图生视频。参考音频可选，并可和上述两种模式组合使用。
+`minimax_h3` 根据有没有参考图片自动选择模式：不传图片为文生视频；传入一张或多张图片为图生视频。参考视频、参考视频配套音频和独立参考音频均为可选输入，可按业务需要组合使用。
 
 ### 1.2 中转站开放能力
 
 | 能力 | 下游调用方式 | 是否开放 |
 | --- | --- | --- |
 | 创建文生/图生视频任务 | `POST /v1/videos` | 是 |
-| 图片、音频素材上传 | `POST /v1/videos` 的 multipart 表单，或传公网 URL | 是 |
+| 图片、视频、音频素材上传 | `POST /v1/videos` 的 multipart 表单，或传公网 URL | 是 |
 | 查询进度和结果 | `GET /v1/videos/{task_id}` | 是 |
 | 下载生成的视频 | `GET /v1/videos/{task_id}/content` | 是 |
 | 单独上传素材 | 当前没有独立素材接口，请随创建请求提交 | 否 |
@@ -79,6 +79,14 @@ curl --request POST "http://103.36.63.156:3000/v1/videos" \
 ```
 
 保存 `id`（或兼容字段 `task_id`）用于后续查询。
+
+提示词增强默认开启。若需要严格按原始提示词提交，可增加：
+
+```json
+"prompt_enhance": false
+```
+
+multipart 请求使用 `--form "prompt_enhance=false"`。该参数只接受 `true` 或 `false`（也兼容 JSON 字符串形式）；其他值会返回参数错误。增强过程临时不可用时，服务会自动回退原始 `prompt` 继续创建任务。
 
 ## 3. 图生视频
 
@@ -159,6 +167,36 @@ curl --request POST "http://103.36.63.156:3000/v1/videos" \
   --form "reference_audio=@./music.mp3"
 ```
 
+### 4.1 视频参考
+
+参考视频支持公网 URL 或 multipart 文件上传。需要给参考视频提供独立配套音轨时，可同时传 `reference_video_audio` 或 `reference_video_audios`。
+
+JSON URL 示例：
+
+```json
+{
+  "model": "minimax_h3",
+  "prompt": "参考人物动作生成一段舞台舞蹈视频",
+  "seconds": 10,
+  "size": "1920x1080",
+  "reference_video": "https://cdn.example.com/motion.mp4",
+  "reference_video_audio": "https://cdn.example.com/motion-audio.mp3"
+}
+```
+
+multipart 示例：
+
+```bash
+curl --request POST "http://103.36.63.156:3000/v1/videos" \
+  --header "Authorization: Bearer $API_KEY" \
+  --form "model=minimax_h3" \
+  --form "prompt=参考视频动作生成舞蹈短片" \
+  --form "seconds=10" \
+  --form "size=1920x1080" \
+  --form "reference_video=@./motion.mp4" \
+  --form "reference_video_audio=@./motion-audio.mp3"
+```
+
 ## 5. 请求参数
 
 ### 5.0 完整 JSON 请求结构
@@ -169,6 +207,7 @@ curl --request POST "http://103.36.63.156:3000/v1/videos" \
 {
   "model": "minimax_h3",
   "prompt": "必填：描述主体、动作、场景和镜头语言",
+  "prompt_enhance": true,
   "seconds": 10,
   "duration": 10,
   "size": "1920x1080",
@@ -185,6 +224,14 @@ curl --request POST "http://103.36.63.156:3000/v1/videos" \
   "reference_audios": [
     "https://cdn.example.com/voice.mp3"
   ],
+  "reference_video": "https://cdn.example.com/reference.mp4",
+  "reference_videos": [
+    "https://cdn.example.com/second-reference.mp4"
+  ],
+  "reference_video_audio": "https://cdn.example.com/reference-track.mp3",
+  "reference_video_audios": [
+    "https://cdn.example.com/second-reference-track.mp3"
+  ],
   "resolution": "1080P",
   "clarity": "2.0",
   "aspect_ratio": "16:9",
@@ -194,7 +241,7 @@ curl --request POST "http://103.36.63.156:3000/v1/videos" \
 
 不要同时为同一种设置传多个互相冲突的值。例如，常规调用只传 `size: "1920x1080"`，不再额外传 `resolution`、`clarity`、`aspect_ratio` 或 `megapixels`。`input_reference`、`image`、`images` 和 `reference_images` 是参考图片的兼容字段；相同 URL 会自动去重。
 
-`metadata` 对象也可以承载 `resolution`、`clarity`、`aspect_ratio`、`megapixels`、`reference_images`、`reference_audio` 和 `reference_audios`，但新接入建议使用请求顶层字段，便于排查和日志分析。
+`metadata` 对象也可以承载 `resolution`、`clarity`、`aspect_ratio`、`megapixels`、`multiple`、`reference_images`、`reference_video`、`reference_videos`、`reference_video_audio`、`reference_video_audios`、`reference_audio` 和 `reference_audios`。新接入仍建议把常用参数放在请求顶层，便于排查和日志分析；`multiple` 使用 `metadata.multiple`。
 
 ### 5.1 基础参数
 
@@ -202,10 +249,11 @@ curl --request POST "http://103.36.63.156:3000/v1/videos" \
 | --- | --- | --- | --- |
 | `model` | string | 是 | 固定为 `minimax_h3`。 |
 | `prompt` | string | 是 | 视频提示词，不能为空。建议描述主体、动作、场景、镜头和风格。 |
+| `prompt_enhance` | boolean | 否 | 是否启用提示词增强，默认 `true`。显式传 `false` 时直接使用原始 `prompt`。JSON 与 multipart 均支持；增强服务不可用或增强失败时自动回退原始提示词，不会仅因增强失败而让视频任务失败。 |
 | `seconds` | integer/string | 否 | 目标时长，推荐传正整数。`duration` 是等价别名；两者都有时优先用 `duration`。未传时默认按 5 秒处理。 |
 | `size` | string | 否 | 画幅和清晰度，推荐使用 `宽x高`，例如 `1920x1080` 或 `1376x768`。 |
 
-建议传入 `1` 到 `3600` 秒的正整数。省略 `seconds`/`duration`（或传入 `0`）时，中转站按 5 秒处理；实际可生成时长仍受模型能力和当前服务资源约束。生产调用建议从 5 秒或 10 秒开始测试。
+允许传入 `1` 到 `300` 秒的正整数。省略 `seconds`/`duration` 时，中转站按 5 秒处理；传入非正整数或超过 300 秒会返回参数错误。实际可生成时长仍受模型能力和当前服务资源约束，生产调用建议从 5 秒或 10 秒开始测试。
 
 ### 5.2 画幅与清晰度
 
@@ -240,16 +288,35 @@ curl --request POST "http://103.36.63.156:3000/v1/videos" \
 
 模型输出画布按 32 像素对齐。因此传入 `1920x1080` 时，实际完成文件可能为 `1920x1088`；这是正常输出，不是接口错误。
 
+#### 5.2.1 标准实际像素尺寸
+
+以下尺寸使用默认 `multiple=32`。成功查询响应返回的 `size` 才是该任务最终采用的实际像素尺寸。
+
+| 画幅 | 1.0 MP | 2.0 MP |
+| --- | --- | --- |
+| `1:1` | `1024x1024` | `1440x1440` |
+| `2:3` | `832x1248` | `1184x1760` |
+| `3:2` | `1248x832` | `1760x1184` |
+| `3:4` | `896x1184` | `1248x1664` |
+| `4:3` | `1184x896` | `1664x1248` |
+| `9:16` | `768x1376` | `1088x1920` |
+| `16:9` | `1376x768` | `1920x1088` |
+| `21:9` | `1568x672` | `2208x960` |
+
+高级调用可在 `metadata.multiple` 传入 `8` 到 `128` 之间且为 4 的倍数；默认值为 `32`。修改该值会改变像素对齐结果，因此客户端不应自行推测最终尺寸，应读取成功查询响应的 `size`。
+
 ### 5.3 参考素材参数与限制
 
 | 类别 | JSON 字段 | multipart 文件字段 | 上限 |
 | --- | --- | --- | --- |
 | 参考图片 | `input_reference`、`image`、`images`、`reference_images` | `input_reference`、`image`、`images`、`reference_images` | 9 张 |
+| 参考视频 | `reference_video`、`reference_videos` | `reference_video`、`reference_videos` | 3 段 |
+| 参考视频配套音频 | `reference_video_audio`、`reference_video_audios` | `reference_video_audio`、`reference_video_audios` | 3 段 |
 | 参考音频 | `reference_audio`、`reference_audios` | `reference_audio`、`reference_audios` | 3 段 |
 
-图片、音频 URL 必须是中转站服务器可访问的公网 `http` 或 `https` 地址。内网、回环、本机和受 SSRF 防护拦截的地址会被拒绝。单个上传或下载的参考文件默认上限为 64 MiB；管理员可通过服务配置调整该上限。
+图片、视频、音频 URL 必须是中转站服务器可访问的公网 `http` 或 `https` 地址。内网、回环、本机和受 SSRF 防护拦截的地址会被拒绝。单个上传或下载的参考文件默认上限为 64 MiB；管理员可通过服务配置调整该上限。
 
-当前 `minimax_h3` 不支持参考视频。请不要传 `reference_video`、`reference_videos`，也不要上传名称中包含 `video` 的文件字段。
+参考视频及其配套音频都支持公网 URL 和 multipart 文件上传。若同时提供多段参考视频及配套音频，建议按数组或重复字段的顺序一一对应；没有配套音频的视频可以只传 `reference_video`/`reference_videos`。
 
 一次请求只创建一个视频任务；`n` 和 `count` 不用于批量生成。需要多条视频时，请并发或串行创建多次任务，并分别轮询结果。
 
@@ -286,11 +353,15 @@ curl --request GET "http://103.36.63.156:3000/v1/videos/$TASK_ID" \
   "progress": 100,
   "created_at": 1786089600,
   "completed_at": 1786089720,
+  "seconds": "5",
+  "size": "1376x768",
   "metadata": {
     "url": "https://.../video.mp4"
   }
 }
 ```
+
+`seconds` 和 `size` 仅在成功任务且服务端保存了最终归一化参数时返回。`seconds` 在此 OpenAI Video 兼容接口中是字符串，`size` 是最终采用的实际像素尺寸；排队、生成中和失败状态不会增加这两个字段。较早创建的历史任务没有冻结值时也可能省略。
 
 状态含义：
 
@@ -313,12 +384,41 @@ curl --request GET "http://103.36.63.156:3000/v1/videos/$TASK_ID" \
 | `progress` | integer | 进度百分比。排队任务通常为 `0`，成功完成为 `100`。 |
 | `created_at` | integer | Unix 秒级时间戳。 |
 | `completed_at` | integer | 完成或失败时的 Unix 秒级时间戳。 |
+| `seconds` | string | OpenAI Video 查询成功时返回的实际时长；旧任务可能省略。 |
+| `size` | string | OpenAI Video 查询成功时返回的实际像素尺寸，例如 `1920x1088`；旧任务可能省略。 |
 | `metadata.url` | string | 仅任务成功时有意义，指向生成结果的视频地址。 |
 | `error.message` | string | 仅 `failed` 时出现，描述失败原因。 |
 
 任务 ID 按中转站账号隔离。查询或下载时应使用创建该任务的同一账号下的 API Key；不要把任务 ID 当作公开的视频链接分发。
 
-### 6.2 错误响应格式
+### 6.2 通用任务查询兼容接口
+
+除了 OpenAI Video 查询接口，还可以使用：
+
+```bash
+curl --request GET "http://103.36.63.156:3000/v1/video/generations/$TASK_ID" \
+  --header "Authorization: Bearer $API_KEY"
+```
+
+成功任务的典型响应：
+
+```json
+{
+  "code": "success",
+  "data": {
+    "status": "SUCCESS",
+    "result_url": "https://.../video.mp4",
+    "data": {
+      "seconds": 5,
+      "size": "1376x768"
+    }
+  }
+}
+```
+
+该兼容接口中的 `seconds` 为整数。只有状态为 `SUCCESS` 且新任务保存了最终参数时才返回 `data.seconds` 和 `data.size`；旧任务可能省略这些字段。
+
+### 6.3 错误响应格式
 
 创建、查询或下载失败时，服务返回 JSON 错误对象。客户端应以 HTTP 状态码为主，并记录 `code` 和 `message`：
 
@@ -329,6 +429,20 @@ curl --request GET "http://103.36.63.156:3000/v1/videos/$TASK_ID" \
   "data": null
 }
 ```
+
+部分鉴权、权限或渠道分配错误会使用 OpenAI 兼容错误结构：
+
+```json
+{
+  "error": {
+    "message": "具体错误信息",
+    "type": "new_api_error",
+    "code": "具体错误代码"
+  }
+}
+```
+
+客户端应优先判断 HTTP 状态码，并兼容读取以上两种错误结构。
 
 | HTTP 状态 | 常见含义 | 客户端建议 |
 | --- | --- | --- |
@@ -457,6 +571,8 @@ while True:
 
 图生视频的前 5 张参考图片包含在该任务的基础价格中；从第 6 张开始，每多 1 张额外加收 **0.10 元/张**。参考音频不单独按条计费。
 
+参考视频、参考视频配套音频和提示词增强开关本身不单独按条计费；实际费用仍以账号当前可见的模型价格、所属分组或定价等级，以及任务创建时的账单记录为准。
+
 中转站的余额、额度和日志可能以 USD 额度展示，因此扣减数字不一定直接等于人民币金额。系统会按站点设置的汇率将当前 H3 人民币价格换算为额度；若账号所在用户分组配置了专属 H3 固定价格，则该价格会替代标准价格，不再按通用分组倍率推导 H3 标价。请以创建任务时的模型价格、账号分组固定价格和账单记录为准。
 
 ### 8.1 自定义清晰度的计费规则
@@ -519,7 +635,7 @@ while True:
 
 ### Q6：可以传参考视频或用一条请求拼接多个视频吗？
 
-当前 H3 下游适配只支持文本、图片和音频参考，不支持参考视频，也不会自动把多个任务拼接成一条视频。需要多段视频时，请创建多个任务并在客户端或独立剪辑服务中合成。
+可以传参考视频。JSON 或 multipart 可使用 `reference_video`、`reference_videos`，最多 3 段；需要为参考视频单独提供配套音轨时，可使用 `reference_video_audio`、`reference_video_audios`，最多 3 段。接口仍然一次只创建一个视频任务，不会自动把多个任务拼接成一条视频；需要多段成片合成时，请创建多个任务并在客户端或独立剪辑服务中处理。
 
 ## 12. 安全与上线检查
 

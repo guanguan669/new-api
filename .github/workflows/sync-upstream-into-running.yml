@@ -1,0 +1,51 @@
+name: Sync Upstream Into Running
+
+on:
+  schedule:
+    - cron: '17,47 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-into-running
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Merge QuantumNous main into running
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout running
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: running
+          fetch-depth: 0
+
+      - name: Fetch upstream main
+        run: |
+          git remote add upstream https://github.com/QuantumNous/new-api.git
+          git fetch --no-tags upstream main
+
+      - name: Merge and push
+        env:
+          TARGET_BRANCH: running
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo 'running already contains the current upstream main.'
+            exit 0
+          fi
+
+          if ! git merge --no-edit --no-ff upstream/main; then
+            git merge --abort || true
+            echo 'Upstream merge has conflicts and requires a one-time manual resolution.' >&2
+            exit 1
+          fi
+
+          git push origin "HEAD:${TARGET_BRANCH}"
