@@ -190,9 +190,7 @@ func InitDB() (err error) {
 		if err != nil {
 			return err
 		}
-		sqlDB.SetMaxIdleConns(common.GetEnvOrDefault("SQL_MAX_IDLE_CONNS", 100))
-		sqlDB.SetMaxOpenConns(common.GetEnvOrDefault("SQL_MAX_OPEN_CONNS", 1000))
-		sqlDB.SetConnMaxLifetime(time.Second * time.Duration(common.GetEnvOrDefault("SQL_MAX_LIFETIME", 60)))
+		configureConnectionPool(sqlDB, dbType)
 
 		if !common.IsMasterNode {
 			return nil
@@ -234,9 +232,7 @@ func InitLogDB() (err error) {
 		if err != nil {
 			return err
 		}
-		sqlDB.SetMaxIdleConns(common.GetEnvOrDefault("SQL_MAX_IDLE_CONNS", 100))
-		sqlDB.SetMaxOpenConns(common.GetEnvOrDefault("SQL_MAX_OPEN_CONNS", 1000))
-		sqlDB.SetConnMaxLifetime(time.Second * time.Duration(common.GetEnvOrDefault("SQL_MAX_LIFETIME", 60)))
+		configureConnectionPool(sqlDB, dbType)
 
 		if !common.IsMasterNode {
 			return nil
@@ -248,6 +244,59 @@ func InitLogDB() (err error) {
 		common.FatalLog(err)
 	}
 	return err
+}
+
+type connectionPoolConfig struct {
+	maxIdleConns    int
+	maxOpenConns    int
+	maxLifetimeSecs int
+}
+
+func connectionPoolConfigFor(databaseType common.DatabaseType) connectionPoolConfig {
+	if databaseType != common.DatabaseTypeSQLite {
+		return connectionPoolConfig{
+			maxIdleConns:    common.GetEnvOrDefault("SQL_MAX_IDLE_CONNS", 100),
+			maxOpenConns:    common.GetEnvOrDefault("SQL_MAX_OPEN_CONNS", 1000),
+			maxLifetimeSecs: common.GetEnvOrDefault("SQL_MAX_LIFETIME", 60),
+		}
+	}
+
+	// WAL allows readers to proceed alongside a writer, but SQLite still has a
+	// single writer. A bounded pool prevents hundreds of competing write
+	// transactions from turning transient contention into SQLITE_BUSY errors.
+	maxOpenConns := common.GetEnvOrDefault("SQLITE_MAX_OPEN_CONNS", 32)
+	if maxOpenConns < 1 {
+		maxOpenConns = 32
+	}
+	maxIdleConns := common.GetEnvOrDefault("SQLITE_MAX_IDLE_CONNS", 16)
+	if maxIdleConns < 0 {
+		maxIdleConns = 16
+	}
+	if maxIdleConns > maxOpenConns {
+		maxIdleConns = maxOpenConns
+	}
+
+	maxLifetimeSecs := common.GetEnvOrDefault("SQLITE_MAX_LIFETIME", 0)
+	if maxLifetimeSecs < 0 {
+		maxLifetimeSecs = 0
+	}
+
+	return connectionPoolConfig{
+		maxIdleConns:    maxIdleConns,
+		maxOpenConns:    maxOpenConns,
+		maxLifetimeSecs: maxLifetimeSecs,
+	}
+}
+
+func configureConnectionPool(sqlDB interface {
+	SetMaxIdleConns(int)
+	SetMaxOpenConns(int)
+	SetConnMaxLifetime(time.Duration)
+}, databaseType common.DatabaseType) {
+	config := connectionPoolConfigFor(databaseType)
+	sqlDB.SetMaxIdleConns(config.maxIdleConns)
+	sqlDB.SetMaxOpenConns(config.maxOpenConns)
+	sqlDB.SetConnMaxLifetime(time.Second * time.Duration(config.maxLifetimeSecs))
 }
 
 func migrateDB() error {
