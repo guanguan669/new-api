@@ -28,7 +28,7 @@ import {
   transformFormDataToCreatePayload,
 } from '../channel-form'
 
-function comfyUIH3Form(workerURLs = '') {
+function comfyUIH3Form(workerURLs = '', gatewayURL = '') {
   return {
     ...CHANNEL_FORM_DEFAULT_VALUES,
     name: 'ComfyUI H3',
@@ -37,6 +37,7 @@ function comfyUIH3Form(workerURLs = '') {
     key: 'comfyui-no-auth',
     models: 'minimax_h3',
     comfyui_h3_backend_urls: workerURLs,
+    comfyui_h3_gateway_url: gatewayURL,
   }
 }
 
@@ -50,7 +51,7 @@ describe('ComfyUI H3 worker URLs', () => {
       models: 'minimax_h3',
       group: 'default',
       settings:
-        '{"comfyui_h3_backend_urls":["http://worker-1:8188","https://worker-2.example"]}',
+        '{"comfyui_h3_backend_urls":["http://worker-1:8188","https://worker-2.example"],"comfyui_h3_gateway_url":"https://gateway.example/h3"}',
       channel_info: {
         is_multi_key: false,
         multi_key_size: 0,
@@ -62,6 +63,34 @@ describe('ComfyUI H3 worker URLs', () => {
     assert.equal(
       defaults.comfyui_h3_backend_urls,
       'http://worker-1:8188\nhttps://worker-2.example'
+    )
+    assert.equal(defaults.comfyui_h3_gateway_url, 'https://gateway.example/h3')
+  })
+
+  test('validates the optional central gateway URL', () => {
+    assert.equal(
+      channelFormSchema.safeParse(
+        comfyUIH3Form('', 'https://gateway.example/h3/')
+      ).success,
+      true
+    )
+    for (const invalidURL of [
+      'ftp://gateway.example',
+      'https://user:pass@gateway.example',
+      'https://gateway.example?h3=1',
+      'https://gateway.example/#queue',
+    ]) {
+      assert.equal(
+        channelFormSchema.safeParse(comfyUIH3Form('', invalidURL)).success,
+        false
+      )
+    }
+    assert.equal(
+      channelFormSchema.safeParse({
+        ...comfyUIH3Form('', 'not-a-url'),
+        type: 1,
+      }).success,
+      true
     )
   })
 
@@ -90,7 +119,8 @@ describe('ComfyUI H3 worker URLs', () => {
   test('serializes a normalized array and removes it for other types', () => {
     const payload = transformFormDataToCreatePayload({
       ...comfyUIH3Form(
-        ' http://worker-1:8188/ \nhttps://worker-2.example///\nhttp://worker-1:8188'
+        ' http://worker-1:8188/ \nhttps://worker-2.example///\nhttp://worker-1:8188',
+        ' https://gateway.example/h3/// '
       ),
       settings: '{"preserved":true}',
     })
@@ -100,6 +130,7 @@ describe('ComfyUI H3 worker URLs', () => {
         'http://worker-1:8188',
         'https://worker-2.example',
       ],
+      comfyui_h3_gateway_url: 'https://gateway.example/h3',
       disable_task_polling_sleep: false,
       upstream_model_update_check_enabled: false,
       upstream_model_update_auto_sync_enabled: false,
@@ -112,9 +143,10 @@ describe('ComfyUI H3 worker URLs', () => {
       ...comfyUIH3Form('http://worker-1:8188'),
       type: 1,
       settings:
-        '{"preserved":true,"comfyui_h3_backend_urls":["http://old-worker:8188"]}',
+        '{"preserved":true,"comfyui_h3_backend_urls":["http://old-worker:8188"],"comfyui_h3_gateway_url":"https://old-gateway.example"}',
     })
     const otherSettings = JSON.parse(otherPayload.channel.settings || '{}')
     assert.equal('comfyui_h3_backend_urls' in otherSettings, false)
+    assert.equal('comfyui_h3_gateway_url' in otherSettings, false)
   })
 })

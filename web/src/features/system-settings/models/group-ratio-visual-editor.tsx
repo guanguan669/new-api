@@ -81,6 +81,7 @@ import { getH3PriceGroups } from '@/features/users/api'
 
 import { safeJsonParse } from '../utils/json-parser'
 import { H3PricingTierUsersSheet } from './h3-pricing-tier-users-sheet'
+import { H3TimeDiscountEditor } from './h3-time-discount-editor'
 import { getNextRunningHubH3TierName } from './runninghub-h3-tier-utils'
 
 type GroupRatioVisualEditorProps = {
@@ -92,6 +93,7 @@ type GroupRatioVisualEditorProps = {
   maxTokenAutoGroupsField: ReactNode
   groupSpecialUsableGroup: string
   runningHubH3GroupPrice: string
+  runningHubH3GroupTimeDiscount: string
   onChange: (field: string, value: string) => void
 }
 
@@ -324,6 +326,7 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
   maxTokenAutoGroupsField,
   groupSpecialUsableGroup,
   runningHubH3GroupPrice,
+  runningHubH3GroupTimeDiscount,
   onChange,
 }: GroupRatioVisualEditorProps) {
   const { t } = useTranslation()
@@ -407,6 +410,12 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
         value={runningHubH3GroupPrice}
         groupOptions={billableGroupNames}
         onChange={onChange}
+      />
+
+      <H3TimeDiscountEditor
+        value={runningHubH3GroupTimeDiscount}
+        groupOptions={billableGroupNames}
+        onChange={(value) => onChange('RunningHubH3GroupTimeDiscount', value)}
       />
 
       <GroupOverrideRules

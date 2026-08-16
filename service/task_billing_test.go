@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/types"
+	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
@@ -236,6 +237,24 @@ func TestTaskBillingContextPriceDataFiltersMultiplier(t *testing.T) {
 		"size":     3,
 		"identity": 1,
 	}, priceData.OtherRatios())
+}
+
+func TestTaskBillingContextPriceDataPreservesZeroH3TimeDiscount(t *testing.T) {
+	priceData := taskBillingContextPriceData(&model.TaskBillingContext{
+		OtherRatios: map[string]float64{
+			"h3_time_discount": 0,
+			"invalid_zero":     0,
+		},
+	})
+	require.NotNil(t, priceData)
+	assert.Equal(t, map[string]float64{"h3_time_discount": 0}, priceData.OtherRatios())
+	assert.Zero(t, priceData.OtherRatioMultiplier())
+}
+
+func TestZeroDiscountTaskSettlementAndRefundAreNoOps(t *testing.T) {
+	info := &relaycommon.RelayInfo{}
+	require.NoError(t, SettleBilling(&gin.Context{}, info, 0))
+	assert.True(t, RefundTaskQuota(context.Background(), &model.Task{Quota: 0}, "zero discount"))
 }
 
 // ---------------------------------------------------------------------------

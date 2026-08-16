@@ -91,6 +91,12 @@ export type ModelCapability =
 export type RunningHubH3GroupPrice = {
   price_768p: number
   price_2k: number
+  group?: string
+}
+
+export type RunningHubH3TimeDiscountStatus = {
+  multiplier: number
+  next_change_at: number
 }
 
 export type PricingData = {
@@ -103,6 +109,10 @@ export type PricingData = {
   supported_endpoint: Record<string, string>
   auto_groups: string[]
   runninghub_h3_group_prices?: Record<string, RunningHubH3GroupPrice>
+  runninghub_h3_group_time_discounts?: Record<
+    string,
+    RunningHubH3TimeDiscountStatus
+  >
   h3_pricing_plan?: string
 }
 

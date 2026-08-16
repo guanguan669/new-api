@@ -982,6 +982,12 @@ func (channel *Channel) ValidateSettings() error {
 		}
 	}
 	if channel.Type == constant.ChannelTypeComfyUIH3 {
+		if gatewayURL := strings.TrimSpace(channelOtherSettings.ComfyUIH3GatewayURL); gatewayURL != "" {
+			parsedURL, err := url.Parse(gatewayURL)
+			if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || parsedURL.Host == "" || parsedURL.User != nil || parsedURL.RawQuery != "" || parsedURL.Fragment != "" {
+				return fmt.Errorf("invalid ComfyUI H3 gateway URL: %s", gatewayURL)
+			}
+		}
 		seenWorkerURLs := make(map[string]struct{}, len(channelOtherSettings.ComfyUIH3BackendURLs))
 		for _, rawWorkerURL := range channelOtherSettings.ComfyUIH3BackendURLs {
 			workerURL := strings.TrimSpace(rawWorkerURL)
@@ -1082,6 +1088,38 @@ func (channel *Channel) IsConfiguredComfyUIH3WorkerURL(rawURL string) bool {
 		}
 	}
 	return false
+}
+
+// ResolveComfyUIH3GatewayKey prefers current credentials only when the task is
+// still bound to this channel's configured gateway. This lets token rotation
+// recover in-flight tasks without sending a new secret to a historical host.
+func (channel *Channel) ResolveComfyUIH3GatewayKey(taskGatewayURL, fallbackKey string) string {
+	fallbackKey = strings.TrimSpace(fallbackKey)
+	if channel == nil || channel.Type != constant.ChannelTypeComfyUIH3 {
+		return fallbackKey
+	}
+	configuredGatewayURL := canonicalComfyUIH3WorkerURL(channel.GetOtherSettings().ComfyUIH3GatewayURL)
+	if configuredGatewayURL == "" || configuredGatewayURL != canonicalComfyUIH3WorkerURL(taskGatewayURL) {
+		return fallbackKey
+	}
+	if !channel.ChannelInfo.IsMultiKey {
+		if key := strings.TrimSpace(channel.Key); key != "" {
+			return key
+		}
+		return fallbackKey
+	}
+	keys := channel.GetKeys()
+	for _, key := range keys {
+		if strings.TrimSpace(key) == fallbackKey && fallbackKey != "" {
+			return fallbackKey
+		}
+	}
+	for _, key := range keys {
+		if key = strings.TrimSpace(key); key != "" {
+			return key
+		}
+	}
+	return fallbackKey
 }
 
 func canonicalComfyUIH3WorkerURL(rawURL string) string {

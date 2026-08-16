@@ -3,13 +3,16 @@ package comfyuih3
 import (
 	"bytes"
 	"context"
+	crand "crypto/rand"
 	_ "embed"
 	"fmt"
 	"io"
 	"math"
+	"math/big"
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -34,35 +37,55 @@ import (
 )
 
 const (
-	channelName             = "comfyui_h3"
-	modelName               = "minimax_h3"
-	promptPath              = "/prompt"
-	historyPath             = "/history/"
-	uploadPath              = "/upload/image"
-	h3NodeID                = "167"
-	paramsNodeID            = "205"
-	promptNodeID            = "209"
-	outputNodeID            = "210"
-	memoryProfileNodeID     = "227"
-	defaultAspect           = "9:16 (Portrait Widescreen)"
-	defaultMegapixels       = 1.0
-	defaultMultiple         = 32
-	maxImages               = 9
-	maxVideos               = 3
-	maxVideoAudios          = 3
-	maxAudios               = 3
-	minMultiple             = 8
-	maxMultiple             = 128
-	multipleStep            = 4
-	maxDurationSeconds      = 300
-	maxAspectRatioGap       = 0.06
-	maxComfyErrorReasonSize = 1000
-	workerQueueTimeout      = 3 * time.Second
-	workerReservationTTL    = 30 * time.Second
+	channelName              = "comfyui_h3"
+	modelName                = "minimax_h3"
+	promptPath               = "/prompt"
+	historyPath              = "/history/"
+	uploadPath               = "/upload/image"
+	gatewayTasksPath         = "/api/gateway/tasks"
+	gatewayUploadsPath       = "/api/gateway/uploads"
+	h3NodeID                 = "167"
+	noiseNodeID              = "182"
+	paramsNodeID             = "205"
+	promptNodeID             = "209"
+	outputNodeID             = "210"
+	teSpeedNodeID            = "226"
+	memoryProfileNodeID      = "227"
+	firstFrameNodeID         = "195"
+	lastFrameNodeID          = "194"
+	firstLastFrameMode       = "first_last_frame"
+	defaultAspect            = "9:16 (Portrait Widescreen)"
+	defaultMegapixels        = 1.0
+	defaultMultiple          = 32
+	maxImages                = 9
+	maxVideos                = 3
+	maxReferenceVideoSeconds = 15
+	// Some valid 15-second videos report a few extra container frames. Keep a
+	// narrow tolerance for that metadata rounding while rejecting real overages.
+	maxReferenceVideoDurationTolerance = 0.1
+	maxVideoAudios                     = 3
+	maxAudios                          = 3
+	minMultiple                        = 8
+	maxMultiple                        = 128
+	multipleStep                       = 4
+	maxDurationSeconds                 = 300
+	maxAspectRatioGap                  = 0.06
+	maxComfyErrorReasonSize            = 1000
+	workerQueueTimeout                 = 2 * time.Second
+	workerReservationTTL               = 30 * time.Second
+	workerUnavailableTTL               = 15 * time.Second
+	referenceVideoProbeTimeout         = 5 * time.Second
+	maxH3NoiseSeed                     = int64(1 << 53)
 )
 
 //go:embed workflow.json
 var workflowTemplate []byte
+
+//go:embed workflow_reference.json
+var referenceWorkflowTemplate []byte
+
+//go:embed workflow_first_last_frame.json
+var firstLastFrameWorkflowTemplate []byte
 
 var h3SupportedAspectLabels = []string{
 	"1:1 (Square)",
@@ -77,10 +100,14 @@ var h3SupportedAspectLabels = []string{
 
 type TaskAdaptor struct {
 	taskcommon.BaseBilling
-	baseURL            string
-	proxy              string
-	workerSelectionErr error
-	workerReserved     bool
+	baseURL              string
+	proxy                string
+	workerSelectionErr   error
+	workerReserved       bool
+	gatewayURL           string
+	gatewayAPIKey        string
+	gatewayUploadIDs     []string
+	gatewayPollingTaskID string
 }
 
 type h3WorkerReservation struct {
@@ -88,10 +115,24 @@ type h3WorkerReservation struct {
 	expiresAt time.Time
 }
 
+type h3WorkerUnavailable struct {
+	expiresAt           time.Time
+	lastError           string
+	clearOnHealthyProbe bool
+}
+
 var h3WorkerReservations = struct {
 	sync.Mutex
-	byURL map[string]h3WorkerReservation
-}{byURL: make(map[string]h3WorkerReservation)}
+	byURL            map[string]h3WorkerReservation
+	nextIndexByPool  map[string]int
+	unavailableByURL map[string]h3WorkerUnavailable
+}{
+	byURL:            make(map[string]h3WorkerReservation),
+	nextIndexByPool:  make(map[string]int),
+	unavailableByURL: make(map[string]h3WorkerUnavailable),
+}
+
+var probeH3ReferenceVideoDuration = ffprobeH3ReferenceVideoDuration
 
 type comfyPromptRequest struct {
 	Prompt   map[string]any `json:"prompt"`
@@ -103,6 +144,35 @@ type comfyPromptResponse struct {
 	Error      any            `json:"error"`
 	NodeErrors map[string]any `json:"node_errors"`
 }
+
+// gatewayTaskRequest carries one complete ComfyUI /prompt payload through the
+// central scheduler. The gateway owns node selection and worker credentials.
+type gatewayTaskRequest struct {
+	TaskKey        string             `json:"task_key,omitempty"`
+	IdempotencyKey string             `json:"idempotency_key,omitempty"`
+	UploadIDs      []string           `json:"upload_ids"`
+	Workflow       comfyPromptRequest `json:"workflow"`
+}
+
+type gatewayTaskResponse struct {
+	TaskID                     string `json:"task_id"`
+	Status                     string `json:"status"`
+	ResultReady                bool   `json:"result_ready"`
+	ViewEndpoint               string `json:"view_endpoint"`
+	Error                      any    `json:"error"`
+	Detail                     any    `json:"detail"`
+	Message                    string `json:"message"`
+	EstimatedGenerationMinutes any    `json:"estimated_generation_minutes"`
+}
+
+type gatewayUploadResponse struct {
+	UploadID string `json:"upload_id"`
+	File     struct {
+		Name string `json:"name"`
+	} `json:"file"`
+}
+
+const gatewayRequestBodyContextKey = "comfyui_h3_gateway_request_body"
 
 type h3Selector struct {
 	AspectRatio string
@@ -201,6 +271,13 @@ var lookupRunningHubH3GroupPrice = func(group string) (h3GroupPrice, bool) {
 // prompt is being uploaded/submitted so concurrent requests do not pile onto
 // the same apparently idle GPU.
 func selectH3Worker(configuredURLs []string, fallbackURL, proxy string) (string, error) {
+	return selectH3WorkerWithContext(context.Background(), configuredURLs, fallbackURL, proxy)
+}
+
+func selectH3WorkerWithContext(ctx context.Context, configuredURLs []string, fallbackURL, proxy string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	workers := h3WorkerURLs(configuredURLs, fallbackURL)
 	if len(workers) == 0 {
 		return "", fmt.Errorf("ComfyUI H3 channel has no valid worker URL")
@@ -215,19 +292,42 @@ func selectH3Worker(configuredURLs []string, fallbackURL, proxy string) (string,
 		candidate candidate
 		err       error
 	}
-	results := make(chan probeResult, len(workers))
+	probeCtx, cancel := context.WithTimeout(ctx, workerQueueTimeout)
+	defer cancel()
+	now := time.Now()
+	availableWorkers := make([]candidate, 0, len(workers))
+	h3WorkerReservations.Lock()
+	cleanupH3WorkerReservationsLocked(now)
 	for index, workerURL := range workers {
+		if unavailable, ok := h3WorkerReservations.unavailableByURL[workerURL]; ok && unavailable.expiresAt.After(now) {
+			continue
+		}
+		availableWorkers = append(availableWorkers, candidate{url: workerURL, index: index})
+	}
+	h3WorkerReservations.Unlock()
+	if len(availableWorkers) == 0 {
+		return "", fmt.Errorf("all configured ComfyUI H3 workers are temporarily unavailable")
+	}
+
+	results := make(chan probeResult, len(availableWorkers))
+	for _, worker := range availableWorkers {
+		index, workerURL := worker.index, worker.url
 		go func(index int, workerURL string) {
-			queueLoad, err := h3WorkerQueueLoad(workerURL, proxy)
+			queueLoad, err := h3WorkerQueueLoadWithContext(probeCtx, workerURL, proxy)
 			results <- probeResult{candidate: candidate{url: workerURL, load: queueLoad, index: index}, err: err}
 		}(index, workerURL)
 	}
-	candidates := make([]candidate, 0, len(workers))
-	for range workers {
+	candidates := make([]candidate, 0, len(availableWorkers))
+	for range availableWorkers {
 		result := <-results
 		if result.err != nil {
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
+			markH3WorkerUnavailable(result.candidate.url, result.err, true)
 			continue
 		}
+		markH3WorkerHealthy(result.candidate.url)
 		candidates = append(candidates, result.candidate)
 	}
 	if len(candidates) == 0 {
@@ -243,13 +343,27 @@ func selectH3Worker(configuredURLs []string, fallbackURL, proxy string) (string,
 	for index := range candidates {
 		candidates[index].load += h3WorkerReservations.byURL[candidates[index].url].count
 	}
-	sort.SliceStable(candidates, func(i, j int) bool {
+	sort.Slice(candidates, func(i, j int) bool {
 		if candidates[i].load == candidates[j].load {
 			return candidates[i].index < candidates[j].index
 		}
 		return candidates[i].load < candidates[j].load
 	})
-	selected := candidates[0].url
+	lowestLoad := candidates[0].load
+	poolKey := strings.Join(workers, "\n")
+	nextIndex := h3WorkerReservations.nextIndexByPool[poolKey]
+	selectedCandidate := candidates[0]
+	for _, candidate := range candidates {
+		if candidate.load != lowestLoad {
+			break
+		}
+		if candidate.index >= nextIndex {
+			selectedCandidate = candidate
+			break
+		}
+	}
+	selected := selectedCandidate.url
+	h3WorkerReservations.nextIndexByPool[poolKey] = selectedCandidate.index + 1
 	reservation := h3WorkerReservations.byURL[selected]
 	reservation.count++
 	reservation.expiresAt = time.Now().Add(workerReservationTTL)
@@ -291,6 +405,13 @@ func normalizeH3WorkerURL(rawURL string) string {
 func h3WorkerQueueLoad(workerURL, proxy string) (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), workerQueueTimeout)
 	defer cancel()
+	return h3WorkerQueueLoadWithContext(ctx, workerURL, proxy)
+}
+
+func h3WorkerQueueLoadWithContext(ctx context.Context, workerURL, proxy string) (int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, workerURL+"/queue", nil)
 	if err != nil {
 		return 0, err
@@ -312,14 +433,49 @@ func h3WorkerQueueLoad(workerURL, proxy string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	var queue struct {
-		Running []any `json:"queue_running"`
-		Pending []any `json:"queue_pending"`
-	}
+	var queue map[string]any
 	if err := common.Unmarshal(body, &queue); err != nil {
 		return 0, err
 	}
-	return len(queue.Running) + len(queue.Pending), nil
+	running, runningOK := queue["queue_running"].([]any)
+	pending, pendingOK := queue["queue_pending"].([]any)
+	if !runningOK || !pendingOK {
+		return 0, fmt.Errorf("worker queue response is missing queue_running or queue_pending arrays")
+	}
+	return len(running) + len(pending), nil
+}
+
+func markH3WorkerUnavailable(workerURL string, err error, clearOnHealthyProbe bool) {
+	if workerURL == "" || err == nil {
+		return
+	}
+	now := time.Now()
+	h3WorkerReservations.Lock()
+	defer h3WorkerReservations.Unlock()
+	cleanupH3WorkerReservationsLocked(now)
+	previous, wasUnavailable := h3WorkerReservations.unavailableByURL[workerURL]
+	if wasUnavailable && previous.expiresAt.After(now) && !previous.clearOnHealthyProbe && clearOnHealthyProbe {
+		return
+	}
+	h3WorkerReservations.unavailableByURL[workerURL] = h3WorkerUnavailable{
+		expiresAt:           now.Add(workerUnavailableTTL),
+		lastError:           err.Error(),
+		clearOnHealthyProbe: clearOnHealthyProbe,
+	}
+	if !wasUnavailable || !previous.expiresAt.After(now) {
+		common.SysError(fmt.Sprintf("ComfyUI H3 worker unavailable: %s: %v", workerURL, err))
+	}
+}
+
+func markH3WorkerHealthy(workerURL string) {
+	if workerURL == "" {
+		return
+	}
+	h3WorkerReservations.Lock()
+	if unavailable, ok := h3WorkerReservations.unavailableByURL[workerURL]; ok && unavailable.clearOnHealthyProbe {
+		delete(h3WorkerReservations.unavailableByURL, workerURL)
+	}
+	h3WorkerReservations.Unlock()
 }
 
 func reserveH3Worker(workerURL string) {
@@ -370,6 +526,11 @@ func cleanupH3WorkerReservationsLocked(now time.Time) {
 			delete(h3WorkerReservations.byURL, workerURL)
 		}
 	}
+	for workerURL, unavailable := range h3WorkerReservations.unavailableByURL {
+		if !unavailable.expiresAt.After(now) {
+			delete(h3WorkerReservations.unavailableByURL, workerURL)
+		}
+	}
 }
 
 func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo) {
@@ -377,17 +538,30 @@ func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo) {
 	a.proxy = ""
 	a.workerSelectionErr = nil
 	a.workerReserved = false
+	a.gatewayURL = ""
+	a.gatewayAPIKey = ""
+	a.gatewayUploadIDs = nil
+	a.gatewayPollingTaskID = ""
 	if info == nil {
 		return
 	}
 	a.baseURL = normalizeH3WorkerURL(info.ChannelBaseUrl)
 	a.proxy = info.ChannelSetting.Proxy
+	a.gatewayURL = normalizeH3WorkerURL(info.ChannelOtherSettings.ComfyUIH3GatewayURL)
+	a.gatewayAPIKey = strings.TrimSpace(info.ApiKey)
+	if a.isGatewayMode() {
+		a.baseURL = a.gatewayURL
+	}
 	if info.TaskRelayInfo != nil {
-		// A failed attempt can be retried. Selection happens only after request
-		// validation, so a retry gets a fresh queue snapshot instead of pinning
-		// itself to the worker from the failed submission attempt.
+		// A failed direct attempt can be retried. Selection happens only after
+		// request validation, so a retry gets a fresh queue snapshot instead of
+		// pinning itself to the worker from the failed submission attempt.
 		info.SelectedBackendURL = ""
 	}
+}
+
+func (a *TaskAdaptor) isGatewayMode() bool {
+	return strings.TrimSpace(a.gatewayURL) != ""
 }
 
 func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycommon.RelayInfo) *taskdto.TaskError {
@@ -408,13 +582,38 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 	if err := validateH3RequestParameters(req, selector); err != nil {
 		return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
 	}
-	if _, err := referenceInputs(c, req); err != nil {
+	referenceSources, err := referenceInputs(c, req)
+	if err != nil {
 		return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
 	}
-	if _, err := newWorkflow(); err != nil {
+	if err := validateH3WorkflowModeReferences(
+		req,
+		len(referenceSources.images)+len(referenceSources.imageFiles),
+		len(referenceSources.videos)+len(referenceSources.videoFiles),
+		len(referenceSources.videoAudios)+len(referenceSources.videoAudioFiles),
+		len(referenceSources.audios)+len(referenceSources.audioFiles),
+	); err != nil {
+		return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+	}
+	if err := a.validateReferenceVideoSources(c, req); err != nil {
+		return service.TaskErrorWrapperLocal(err, "invalid_reference_video", http.StatusBadRequest)
+	}
+	if _, err := embeddedWorkflows(); err != nil {
 		return service.TaskErrorWrapperLocal(err, "invalid_workflow", http.StatusBadGateway)
 	}
-	selected, err := selectH3Worker(info.ChannelOtherSettings.ComfyUIH3BackendURLs, a.baseURL, a.proxy)
+	if a.isGatewayMode() {
+		if strings.TrimSpace(a.gatewayAPIKey) == "" {
+			return service.TaskErrorWrapperLocal(fmt.Errorf("ComfyUI H3 gateway API token is empty"), "invalid_channel_config", http.StatusBadGateway)
+		}
+		if info != nil && info.TaskRelayInfo != nil {
+			// Persist the gateway root with the task. Later polling must stay on
+			// the scheduler that accepted this submission, not fall back to a
+			// raw ComfyUI worker selected by a later configuration change.
+			info.SelectedBackendURL = a.gatewayURL
+		}
+		return nil
+	}
+	selected, err := selectH3WorkerWithContext(c.Request.Context(), info.ChannelOtherSettings.ComfyUIH3BackendURLs, a.baseURL, a.proxy)
 	if err != nil {
 		a.workerSelectionErr = err
 		return service.TaskErrorWrapperLocal(err, "comfyui_h3_worker_unavailable", http.StatusServiceUnavailable)
@@ -539,21 +738,45 @@ func (a *TaskAdaptor) BuildRequestURL(_ *relaycommon.RelayInfo) (string, error) 
 	if a.baseURL == "" {
 		return "", fmt.Errorf("ComfyUI channel base URL is empty")
 	}
+	if a.isGatewayMode() {
+		return a.baseURL + gatewayTasksPath, nil
+	}
 	return a.baseURL + promptPath, nil
 }
 
-func (a *TaskAdaptor) BuildRequestHeader(_ *gin.Context, req *http.Request, _ *relaycommon.RelayInfo) error {
+func (a *TaskAdaptor) BuildRequestHeader(_ *gin.Context, req *http.Request, info *relaycommon.RelayInfo) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	if a.isGatewayMode() {
+		apiKey := a.gatewayKey(info)
+		if apiKey == "" {
+			return fmt.Errorf("ComfyUI H3 gateway API token is empty")
+		}
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
 	return nil
 }
 
-func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, _ *relaycommon.RelayInfo) (bodyReader io.Reader, err error) {
+func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayInfo) (bodyReader io.Reader, err error) {
 	defer func() {
 		if err != nil {
 			a.releaseWorkerReservation()
 		}
 	}()
+	if a.isGatewayMode() && c != nil {
+		if cached, exists := c.Get(gatewayRequestBodyContextKey); exists {
+			if body, ok := cached.([]byte); ok && len(body) > 0 {
+				return bytes.NewReader(body), nil
+			}
+		}
+	}
+	var gatewayTaskKey string
+	if a.isGatewayMode() {
+		gatewayTaskKey, err = gatewaySubmissionKey(info)
+		if err != nil {
+			return nil, err
+		}
+	}
 	req, err := relaycommon.GetTaskRequest(c)
 	if err != nil {
 		return nil, err
@@ -565,7 +788,23 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, _ *relaycommon.RelayInfo)
 	if err := validateH3RequestParameters(req, selector); err != nil {
 		return nil, err
 	}
+	referenceSources, err := referenceInputs(c, req)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateH3WorkflowModeReferences(
+		req,
+		len(referenceSources.images)+len(referenceSources.imageFiles),
+		len(referenceSources.videos)+len(referenceSources.videoFiles),
+		len(referenceSources.videoAudios)+len(referenceSources.videoAudioFiles),
+		len(referenceSources.audios)+len(referenceSources.audioFiles),
+	); err != nil {
+		return nil, err
+	}
 	req = a.applyPromptEnhancement(c, req, selector)
+	if a.isGatewayMode() {
+		a.gatewayUploadIDs = nil
+	}
 	references, err := a.collectReferences(c, req)
 	if err != nil {
 		return nil, err
@@ -574,23 +813,84 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, _ *relaycommon.RelayInfo)
 	if err != nil {
 		return nil, err
 	}
-	clientID, err := common.GenerateRandomCharsKey(32)
+	clientID, err := a.comfyClientID(info)
 	if err != nil {
 		return nil, err
 	}
-	body, err := common.Marshal(comfyPromptRequest{Prompt: workflow, ClientID: clientID})
+	workflowRequest := comfyPromptRequest{Prompt: workflow, ClientID: clientID}
+	var body []byte
+	if a.isGatewayMode() {
+		uploadIDs := make([]string, len(a.gatewayUploadIDs))
+		copy(uploadIDs, a.gatewayUploadIDs)
+		body, err = common.Marshal(gatewayTaskRequest{
+			TaskKey:        gatewayTaskKey,
+			IdempotencyKey: gatewayTaskKey,
+			UploadIDs:      uploadIDs,
+			Workflow:       workflowRequest,
+		})
+	} else {
+		body, err = common.Marshal(workflowRequest)
+	}
 	if err != nil {
 		return nil, err
+	}
+	if a.isGatewayMode() && c != nil {
+		// A failed HTTP response can be retried by NewAPI. Reuse the exact
+		// request, including random workflow seed and upload IDs, because the
+		// gateway's idempotency key rejects a different body for the same task.
+		c.Set(gatewayRequestBodyContextKey, append([]byte(nil), body...))
 	}
 	return bytes.NewReader(body), nil
 }
 
+func (a *TaskAdaptor) comfyClientID(info *relaycommon.RelayInfo) (string, error) {
+	if a.isGatewayMode() {
+		taskKey, err := gatewaySubmissionKey(info)
+		if err != nil {
+			return "", err
+		}
+		return "newapi-" + taskKey, nil
+	}
+	return common.GenerateRandomCharsKey(32)
+}
+
+func gatewaySubmissionKey(info *relaycommon.RelayInfo) (string, error) {
+	if info == nil || info.TaskRelayInfo == nil || strings.TrimSpace(info.PublicTaskID) == "" {
+		return "", fmt.Errorf("ComfyUI H3 gateway requires a public task ID before submission")
+	}
+	return strings.TrimSpace(info.PublicTaskID), nil
+}
+
+func (a *TaskAdaptor) gatewayKey(info *relaycommon.RelayInfo) string {
+	if info != nil && strings.TrimSpace(info.ApiKey) != "" {
+		return strings.TrimSpace(info.ApiKey)
+	}
+	return strings.TrimSpace(a.gatewayAPIKey)
+}
+
 func (a *TaskAdaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (*http.Response, error) {
 	resp, err := channel.DoTaskApiRequest(a, c, info, requestBody)
+	if !a.isGatewayMode() {
+		if shouldQuarantineH3WorkerAfterSubmitError(c, err) {
+			markH3WorkerUnavailable(a.baseURL, err, false)
+		} else if resp != nil && resp.StatusCode >= http.StatusInternalServerError {
+			markH3WorkerUnavailable(a.baseURL, fmt.Errorf("ComfyUI prompt returned status %d", resp.StatusCode), false)
+		}
+	}
 	if err != nil || (resp != nil && (resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices)) {
 		a.releaseWorkerReservation()
 	}
 	return resp, err
+}
+
+func shouldQuarantineH3WorkerAfterSubmitError(c *gin.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	if c != nil && c.Request != nil && c.Request.Context().Err() != nil {
+		return false
+	}
+	return channel.IsUpstreamTransportError(err)
 }
 
 func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (string, []byte, *taskdto.TaskError) {
@@ -598,6 +898,9 @@ func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *rela
 	if err != nil {
 		a.releaseWorkerReservation()
 		return "", nil, service.TaskErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError)
+	}
+	if a.isGatewayMode() {
+		return a.doGatewayResponse(c, resp, info, body)
 	}
 	var result comfyPromptResponse
 	if err := common.Unmarshal(body, &result); err != nil {
@@ -639,6 +942,60 @@ func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *rela
 	return result.PromptID, body, nil
 }
 
+func (a *TaskAdaptor) doGatewayResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, body []byte) (string, []byte, *taskdto.TaskError) {
+	var result gatewayTaskResponse
+	if err := common.Unmarshal(body, &result); err != nil {
+		return "", nil, service.TaskErrorWrapper(fmt.Errorf("unmarshal ComfyUI H3 gateway create response: %w", err), "unmarshal_response_body_failed", http.StatusBadGateway)
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices || strings.TrimSpace(result.TaskID) == "" {
+		message := gatewayResponseMessage(result)
+		if message == "" && strings.TrimSpace(result.TaskID) == "" {
+			message = "ComfyUI H3 gateway create response missing task_id"
+		}
+		if message == "" {
+			message = resp.Status
+		}
+		return "", nil, service.TaskErrorWrapper(fmt.Errorf("ComfyUI H3 gateway create failed: %s", message), "comfyui_h3_gateway_create_failed", resp.StatusCode)
+	}
+
+	publicTaskID, modelForClient := h3PublicTaskDetails(info, result.TaskID)
+	video := openaidto.NewOpenAIVideo()
+	video.ID = publicTaskID
+	video.TaskID = publicTaskID
+	video.Model = modelForClient
+	video.Status = openaidto.VideoStatusQueued
+	video.CreatedAt = time.Now().Unix()
+	if c != nil {
+		c.JSON(http.StatusOK, video)
+	}
+	return result.TaskID, body, nil
+}
+
+func h3PublicTaskDetails(info *relaycommon.RelayInfo, fallbackTaskID string) (publicTaskID string, modelForClient string) {
+	publicTaskID = fallbackTaskID
+	modelForClient = modelName
+	if info == nil {
+		return publicTaskID, modelForClient
+	}
+	if info.TaskRelayInfo != nil && strings.TrimSpace(info.PublicTaskID) != "" {
+		publicTaskID = info.PublicTaskID
+	}
+	if strings.TrimSpace(info.OriginModelName) != "" {
+		modelForClient = info.OriginModelName
+	}
+	return publicTaskID, modelForClient
+}
+
+func gatewayResponseMessage(result gatewayTaskResponse) string {
+	if message := strings.TrimSpace(result.Message); message != "" {
+		return message
+	}
+	if message := compactComfyError(result.Error); message != "" {
+		return message
+	}
+	return compactComfyError(result.Detail)
+}
+
 func (a *TaskAdaptor) releaseWorkerReservation() {
 	if !a.workerReserved {
 		return
@@ -653,7 +1010,7 @@ func (a *TaskAdaptor) AbortTaskSubmission() {
 	a.releaseWorkerReservation()
 }
 
-func (a *TaskAdaptor) FetchTask(baseURL, _ string, body map[string]any, proxy string) (*http.Response, error) {
+func (a *TaskAdaptor) FetchTask(baseURL, key string, body map[string]any, proxy string) (*http.Response, error) {
 	taskID, _ := body["task_id"].(string)
 	if taskID == "" {
 		taskID, _ = body["taskId"].(string)
@@ -661,7 +1018,29 @@ func (a *TaskAdaptor) FetchTask(baseURL, _ string, body map[string]any, proxy st
 	if strings.TrimSpace(taskID) == "" {
 		return nil, fmt.Errorf("ComfyUI task ID is empty")
 	}
-	a.baseURL = strings.TrimRight(baseURL, "/")
+	a.baseURL = normalizeH3WorkerURL(baseURL)
+	if a.isGatewayMode() {
+		apiKey := strings.TrimSpace(key)
+		if apiKey == "" {
+			apiKey = a.gatewayKey(nil)
+		}
+		if apiKey == "" {
+			return nil, fmt.Errorf("ComfyUI H3 gateway API token is empty")
+		}
+		a.gatewayPollingTaskID = taskID
+		requestURL := a.baseURL + gatewayTasksPath + "/" + url.PathEscape(taskID)
+		req, err := http.NewRequest(http.MethodGet, requestURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		client, err := service.GetHttpClientWithProxy(strings.TrimSpace(proxy))
+		if err != nil {
+			return nil, err
+		}
+		return client.Do(req)
+	}
 	requestURL := a.baseURL + historyPath + url.PathEscape(taskID)
 	req, err := http.NewRequest(http.MethodGet, requestURL, nil)
 	if err != nil {
@@ -676,6 +1055,9 @@ func (a *TaskAdaptor) FetchTask(baseURL, _ string, body map[string]any, proxy st
 }
 
 func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, error) {
+	if a.isGatewayMode() {
+		return a.parseGatewayTaskResult(respBody)
+	}
 	var payload map[string]any
 	if err := common.Unmarshal(respBody, &payload); err != nil {
 		return nil, fmt.Errorf("unmarshal ComfyUI task result: %w", err)
@@ -730,6 +1112,47 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 	return &relaycommon.TaskInfo{Status: string(model.TaskStatusInProgress), Progress: "30%"}, nil
 }
 
+func (a *TaskAdaptor) parseGatewayTaskResult(respBody []byte) (*relaycommon.TaskInfo, error) {
+	var result gatewayTaskResponse
+	if err := common.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("unmarshal ComfyUI H3 gateway task result: %w", err)
+	}
+	status := strings.ToLower(strings.TrimSpace(result.Status))
+	switch status {
+	case "waiting", "dispatching", "queued", "node_unavailable":
+		return &relaycommon.TaskInfo{Status: string(model.TaskStatusQueued), Progress: "20%"}, nil
+	case "running":
+		return &relaycommon.TaskInfo{Status: string(model.TaskStatusInProgress), Progress: "50%"}, nil
+	case "completed":
+		if !result.ResultReady {
+			return &relaycommon.TaskInfo{Status: string(model.TaskStatusInProgress), Progress: "90%"}, nil
+		}
+		taskID := strings.TrimSpace(result.TaskID)
+		if taskID == "" {
+			taskID = strings.TrimSpace(a.gatewayPollingTaskID)
+		}
+		if taskID == "" {
+			return &relaycommon.TaskInfo{Status: string(model.TaskStatusFailure), Progress: "100%", Reason: "ComfyUI H3 gateway completed without task_id"}, nil
+		}
+		return &relaycommon.TaskInfo{
+			Status:   string(model.TaskStatusSuccess),
+			Progress: "100%",
+			Url:      a.gatewayResultURL(taskID),
+		}, nil
+	case "failed", "expired", "cancelled":
+		reason := gatewayResponseMessage(result)
+		if reason == "" {
+			reason = "ComfyUI H3 gateway task " + status
+		}
+		return &relaycommon.TaskInfo{Status: string(model.TaskStatusFailure), Progress: "100%", Reason: reason}, nil
+	}
+	return &relaycommon.TaskInfo{Status: string(model.TaskStatusInProgress), Progress: "30%"}, nil
+}
+
+func (a *TaskAdaptor) gatewayResultURL(taskID string) string {
+	return strings.TrimRight(a.baseURL, "/") + gatewayTasksPath + "/" + url.PathEscape(taskID) + "/view"
+}
+
 func (a *TaskAdaptor) GetModelList() []string { return []string{modelName} }
 
 func (a *TaskAdaptor) GetChannelName() string { return channelName }
@@ -746,19 +1169,67 @@ func (a *TaskAdaptor) ConvertToOpenAIVideo(task *model.Task) ([]byte, error) {
 		}
 		video.Error = &openaidto.OpenAIVideoError{Message: message, Code: "task_failed"}
 	}
-	return common.Marshal(video)
+	return common.MarshalNoHTMLEscape(video)
 }
 
 func newWorkflow() (map[string]any, error) {
+	return newWorkflowFromTemplate(workflowTemplate, "FL2VA", "MiniMaxH3ReferenceToVideo")
+}
+
+func newReferenceWorkflow() (map[string]any, error) {
+	return newWorkflowFromTemplate(referenceWorkflowTemplate, "reference", "MiniMaxH3ReferenceToVideo")
+}
+
+func newFirstLastFrameWorkflow() (map[string]any, error) {
+	workflow, err := newWorkflowFromTemplate(firstLastFrameWorkflowTemplate, "first-last-frame", "MiniMaxH3ImageToVideo")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := workflowInputs(workflow, firstFrameNodeID, "image"); err != nil {
+		return nil, err
+	}
+	if _, err := workflowInputs(workflow, lastFrameNodeID, "image"); err != nil {
+		return nil, err
+	}
+	return workflow, nil
+}
+
+func newWorkflowForRequest(req relaycommon.TaskSubmitReq, input references) (map[string]any, error) {
+	if isFirstLastFrameMode(req.Mode) {
+		return newFirstLastFrameWorkflow()
+	}
+	if len(input.Images) > 0 {
+		return newReferenceWorkflow()
+	}
+	return newWorkflow()
+}
+
+func embeddedWorkflows() ([]map[string]any, error) {
+	defaultWorkflow, err := newWorkflow()
+	if err != nil {
+		return nil, err
+	}
+	referenceWorkflow, err := newReferenceWorkflow()
+	if err != nil {
+		return nil, err
+	}
+	firstLastFrameWorkflow, err := newFirstLastFrameWorkflow()
+	if err != nil {
+		return nil, err
+	}
+	return []map[string]any{defaultWorkflow, referenceWorkflow, firstLastFrameWorkflow}, nil
+}
+
+func newWorkflowFromTemplate(template []byte, name, h3NodeType string) (map[string]any, error) {
 	var workflow map[string]any
-	if err := common.Unmarshal(workflowTemplate, &workflow); err != nil {
-		return nil, fmt.Errorf("unmarshal embedded ComfyUI H3 workflow: %w", err)
+	if err := common.Unmarshal(template, &workflow); err != nil {
+		return nil, fmt.Errorf("unmarshal embedded ComfyUI H3 %s workflow: %w", name, err)
 	}
 	if len(workflow) == 0 {
-		return nil, fmt.Errorf("embedded ComfyUI H3 workflow is empty")
+		return nil, fmt.Errorf("embedded ComfyUI H3 %s workflow is empty", name)
 	}
-	if node, ok := workflow[h3NodeID].(map[string]any); !ok || firstString(node, "class_type") != "MiniMaxH3ReferenceToVideo" {
-		return nil, fmt.Errorf("embedded ComfyUI H3 workflow missing MiniMaxH3ReferenceToVideo node %s", h3NodeID)
+	if node, ok := workflow[h3NodeID].(map[string]any); !ok || firstString(node, "class_type") != h3NodeType {
+		return nil, fmt.Errorf("embedded ComfyUI H3 %s workflow missing %s node %s", name, h3NodeType, h3NodeID)
 	}
 	if _, err := workflowInputs(workflow, promptNodeID, "value"); err != nil {
 		return nil, err
@@ -767,7 +1238,7 @@ func newWorkflow() (map[string]any, error) {
 		return nil, err
 	}
 	if node, ok := workflow[outputNodeID].(map[string]any); !ok || firstString(node, "class_type") != "VHS_VideoCombine" {
-		return nil, fmt.Errorf("embedded ComfyUI H3 workflow missing VHS_VideoCombine output node %s", outputNodeID)
+		return nil, fmt.Errorf("embedded ComfyUI H3 %s workflow missing VHS_VideoCombine output node %s", name, outputNodeID)
 	}
 	return workflow, nil
 }
@@ -776,7 +1247,7 @@ func newWorkflow() (map[string]any, error) {
 // workflow, including optional reference-input nodes injected at request time.
 // Channel validation uses this before accepting a ComfyUI H3 server.
 func RequiredNodeTypes() ([]string, error) {
-	workflow, err := newWorkflow()
+	workflows, err := embeddedWorkflows()
 	if err != nil {
 		return nil, err
 	}
@@ -784,13 +1255,15 @@ func RequiredNodeTypes() ([]string, error) {
 		"XB_VideoLoader": {},
 		"LoadAudio":      {},
 	}
-	for _, value := range workflow {
-		node, ok := value.(map[string]any)
-		if !ok {
-			continue
-		}
-		if classType := firstString(node, "class_type"); classType != "" {
-			nodeTypes[classType] = struct{}{}
+	for _, workflow := range workflows {
+		for _, value := range workflow {
+			node, ok := value.(map[string]any)
+			if !ok {
+				continue
+			}
+			if classType := firstString(node, "class_type"); classType != "" {
+				nodeTypes[classType] = struct{}{}
+			}
 		}
 	}
 	result := make([]string, 0, len(nodeTypes))
@@ -805,7 +1278,7 @@ func RequiredNodeTypes() ([]string, error) {
 // embedded workflow. Channel tests use it to fail early when an otherwise
 // installed ComfyUI node does not have the H3 assets required by this workflow.
 func RequiredNodeChoices() ([]RequiredNodeChoice, error) {
-	workflow, err := newWorkflow()
+	workflows, err := embeddedWorkflows()
 	if err != nil {
 		return nil, err
 	}
@@ -816,31 +1289,33 @@ func RequiredNodeChoices() ([]RequiredNodeChoice, error) {
 		"LoraLoaderModelOnly":    {"lora_name": {}},
 		"MiniMaxH3MemoryProfile": {"profile": {}},
 	}
-	choices := make([]RequiredNodeChoice, 0, 5)
+	choices := make([]RequiredNodeChoice, 0, 10)
 	seen := make(map[RequiredNodeChoice]struct{})
-	for _, value := range workflow {
-		node, ok := value.(map[string]any)
-		if !ok {
-			continue
-		}
-		nodeType := firstString(node, "class_type")
-		inputNames, ok := choiceInputs[nodeType]
-		if !ok {
-			continue
-		}
-		inputs, ok := node["inputs"].(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("embedded ComfyUI H3 workflow missing %s inputs", nodeType)
-		}
-		for inputName := range inputNames {
-			selectedValue, ok := inputs[inputName].(string)
-			if !ok || strings.TrimSpace(selectedValue) == "" {
-				return nil, fmt.Errorf("embedded ComfyUI H3 workflow missing %s input %s", nodeType, inputName)
+	for _, workflow := range workflows {
+		for _, value := range workflow {
+			node, ok := value.(map[string]any)
+			if !ok {
+				continue
 			}
-			choice := RequiredNodeChoice{NodeType: nodeType, InputName: inputName, Value: selectedValue}
-			if _, exists := seen[choice]; !exists {
-				seen[choice] = struct{}{}
-				choices = append(choices, choice)
+			nodeType := firstString(node, "class_type")
+			inputNames, ok := choiceInputs[nodeType]
+			if !ok {
+				continue
+			}
+			inputs, ok := node["inputs"].(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("embedded ComfyUI H3 workflow missing %s inputs", nodeType)
+			}
+			for inputName := range inputNames {
+				selectedValue, ok := inputs[inputName].(string)
+				if !ok || strings.TrimSpace(selectedValue) == "" {
+					return nil, fmt.Errorf("embedded ComfyUI H3 workflow missing %s input %s", nodeType, inputName)
+				}
+				choice := RequiredNodeChoice{NodeType: nodeType, InputName: inputName, Value: selectedValue}
+				if _, exists := seen[choice]; !exists {
+					seen[choice] = struct{}{}
+					choices = append(choices, choice)
+				}
 			}
 		}
 	}
@@ -857,10 +1332,22 @@ func RequiredNodeChoices() ([]RequiredNodeChoice, error) {
 }
 
 func buildWorkflow(req relaycommon.TaskSubmitReq, selector h3Selector, input references) (map[string]any, error) {
-	workflow, err := newWorkflow()
+	if err := validateH3WorkflowModeReferences(req, len(input.Images), len(input.Videos), len(input.VideoAudios), len(input.Audios)); err != nil {
+		return nil, err
+	}
+	workflow, err := newWorkflowForRequest(req, input)
 	if err != nil {
 		return nil, err
 	}
+	noiseInputs, err := workflowInputs(workflow, noiseNodeID, "noise_seed")
+	if err != nil {
+		return nil, err
+	}
+	noiseSeed, err := newH3NoiseSeed()
+	if err != nil {
+		return nil, err
+	}
+	noiseInputs["noise_seed"] = noiseSeed
 	promptInputs, _ := workflowInputs(workflow, promptNodeID, "value")
 	promptInputs["value"] = req.Prompt
 	paramsInputs, _ := workflowInputs(workflow, paramsNodeID, "aspect_ratio", "megapixels", "multiple", "duration")
@@ -868,17 +1355,28 @@ func buildWorkflow(req relaycommon.TaskSubmitReq, selector h3Selector, input ref
 	paramsInputs["megapixels"] = selector.Megapixels
 	paramsInputs["multiple"] = selector.Multiple
 	paramsInputs["duration"] = requestSeconds(req)
-	memoryProfileInputs, err := workflowInputs(workflow, memoryProfileNodeID, "profile")
-	if err != nil {
+	if err := configureWorkflowRuntimeProfile(workflow, selector, req, input); err != nil {
 		return nil, err
 	}
-	memoryProfileInputs["profile"] = h3MemoryProfile(selector.Megapixels, requestSeconds(req))
 
 	h3Inputs, err := workflowInputs(workflow, h3NodeID)
 	if err != nil {
 		return nil, err
 	}
-	clearReferenceInputs(h3Inputs)
+	if isFirstLastFrameMode(req.Mode) {
+		firstFrameInputs, err := workflowInputs(workflow, firstFrameNodeID, "image")
+		if err != nil {
+			return nil, err
+		}
+		lastFrameInputs, err := workflowInputs(workflow, lastFrameNodeID, "image")
+		if err != nil {
+			return nil, err
+		}
+		firstFrameInputs["image"] = input.Images[0]
+		lastFrameInputs["image"] = input.Images[1]
+		return workflow, nil
+	}
+	clearReferenceInputs(workflow, h3Inputs)
 	nextID := nextNodeID(workflow)
 	appendReference := func(prefix string, index int, classType string, inputs map[string]any, outputIndex int) {
 		nodeID := strconv.Itoa(nextID)
@@ -913,8 +1411,112 @@ func buildWorkflow(req relaycommon.TaskSubmitReq, selector h3Selector, input ref
 	return workflow, nil
 }
 
-func h3MemoryProfile(megapixels float64, seconds int) string {
-	if megapixels*float64(seconds) > 18 {
+func isFirstLastFrameMode(mode string) bool {
+	normalized, err := normalizeH3WorkflowMode(mode)
+	return err == nil && normalized == firstLastFrameMode
+}
+
+func normalizeH3WorkflowMode(mode string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(mode))
+	normalized = strings.ReplaceAll(normalized, "-", "_")
+	switch normalized {
+	case "":
+		return "", nil
+	case firstLastFrameMode:
+		return firstLastFrameMode, nil
+	default:
+		return "", fmt.Errorf("unsupported ComfyUI H3 mode %q; supported mode is %s", mode, firstLastFrameMode)
+	}
+}
+
+func validateH3WorkflowModeReferences(req relaycommon.TaskSubmitReq, imageCount, videoCount, videoAudioCount, audioCount int) error {
+	mode, err := normalizeH3WorkflowMode(req.Mode)
+	if err != nil {
+		return err
+	}
+	if mode != firstLastFrameMode {
+		return nil
+	}
+	if imageCount != 2 {
+		return fmt.Errorf("ComfyUI H3 %s mode requires exactly 2 images in first-frame, last-frame order", firstLastFrameMode)
+	}
+	if videoCount > 0 || videoAudioCount > 0 || audioCount > 0 {
+		return fmt.Errorf("ComfyUI H3 %s mode supports only the 2 frame images", firstLastFrameMode)
+	}
+	return nil
+}
+
+func configureWorkflowRuntimeProfile(workflow map[string]any, selector h3Selector, req relaycommon.TaskSubmitReq, input references) error {
+	node, ok := workflow[memoryProfileNodeID].(map[string]any)
+	if !ok {
+		return fmt.Errorf("embedded ComfyUI H3 workflow missing model profile node %s", memoryProfileNodeID)
+	}
+	switch firstString(node, "class_type") {
+	case "MiniMaxH3MemoryProfile":
+		inputs, err := workflowInputs(workflow, memoryProfileNodeID, "profile")
+		if err != nil {
+			return err
+		}
+		profile := h3MemoryProfile(
+			selector.Megapixels,
+			requestSeconds(req),
+			len(input.Images),
+			len(input.Videos) > 0,
+		)
+		inputs["profile"] = profile
+		return configureTESpeedDevice(workflow, profile)
+	case "MiniMaxH3BlockCacheT8":
+		_, err := workflowInputs(
+			workflow,
+			memoryProfileNodeID,
+			"residual_diff_threshold",
+			"start_percent",
+			"end_percent",
+			"max_consecutive_hits",
+			"cache_device",
+			"metric_stride",
+			"verbose",
+		)
+		return err
+	default:
+		return fmt.Errorf("embedded ComfyUI H3 workflow has unsupported model profile node %s", firstString(node, "class_type"))
+	}
+}
+
+func configureTESpeedDevice(workflow map[string]any, memoryProfile string) error {
+	nodeValue, exists := workflow[teSpeedNodeID]
+	if !exists {
+		return nil
+	}
+	node, ok := nodeValue.(map[string]any)
+	if !ok || firstString(node, "class_type") != "TESpeedMiniMaxH3" {
+		return fmt.Errorf("embedded ComfyUI H3 workflow node %s is not TESpeedMiniMaxH3", teSpeedNodeID)
+	}
+	inputs, err := workflowInputs(workflow, teSpeedNodeID, "device")
+	if err != nil {
+		return err
+	}
+	switch memoryProfile {
+	case "2MP low VRAM":
+		inputs["device"] = "cpu"
+	case "1MP standard speed":
+		inputs["device"] = "gpu"
+	default:
+		return fmt.Errorf("unsupported MiniMax H3 memory profile %q for TE-Speed device", memoryProfile)
+	}
+	return nil
+}
+
+func newH3NoiseSeed() (int64, error) {
+	seed, err := crand.Int(crand.Reader, big.NewInt(maxH3NoiseSeed))
+	if err != nil {
+		return 0, fmt.Errorf("generate ComfyUI H3 noise seed: %w", err)
+	}
+	return seed.Int64(), nil
+}
+
+func h3MemoryProfile(megapixels float64, seconds, referenceImageCount int, hasReferenceVideo bool) string {
+	if megapixels*float64(seconds) > 18 || referenceImageCount >= 5 || hasReferenceVideo {
 		return "2MP low VRAM"
 	}
 	return "1MP standard speed"
@@ -937,15 +1539,60 @@ func workflowInputs(workflow map[string]any, nodeID string, requiredFields ...st
 	return inputs, nil
 }
 
-func clearReferenceInputs(inputs map[string]any) {
-	for key := range inputs {
+func clearReferenceInputs(workflow map[string]any, inputs map[string]any) {
+	detachedNodeIDs := make(map[string]struct{})
+	for key, value := range inputs {
 		if strings.HasPrefix(key, "ref_images.ref_image_") ||
 			strings.HasPrefix(key, "ref_videos.ref_video_") ||
 			strings.HasPrefix(key, "ref_video_audios.ref_video_audio_") ||
 			strings.HasPrefix(key, "ref_audios.ref_audio_") {
+			if reference, ok := value.([]any); ok && len(reference) > 0 {
+				if nodeID, ok := reference[0].(string); ok {
+					detachedNodeIDs[nodeID] = struct{}{}
+				}
+			}
 			delete(inputs, key)
 		}
 	}
+	for nodeID := range detachedNodeIDs {
+		node, ok := workflow[nodeID].(map[string]any)
+		if !ok || !isReferenceLoaderNode(firstString(node, "class_type")) || workflowReferencesNode(workflow, nodeID) {
+			continue
+		}
+		delete(workflow, nodeID)
+	}
+}
+
+func isReferenceLoaderNode(classType string) bool {
+	switch classType {
+	case "LoadImage", "XB_VideoLoader", "LoadAudio":
+		return true
+	default:
+		return false
+	}
+}
+
+func workflowReferencesNode(workflow map[string]any, targetNodeID string) bool {
+	for _, value := range workflow {
+		node, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		inputs, ok := node["inputs"].(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, input := range inputs {
+			reference, ok := input.([]any)
+			if !ok || len(reference) == 0 {
+				continue
+			}
+			if nodeID, ok := reference[0].(string); ok && nodeID == targetNodeID {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func nextNodeID(workflow map[string]any) int {
@@ -963,6 +1610,10 @@ func (a *TaskAdaptor) collectReferences(c *gin.Context, req relaycommon.TaskSubm
 	if err != nil {
 		return references{}, err
 	}
+	uploadedImages := make([]string, 0, len(sources.imageFiles))
+	uploadedVideos := make([]string, 0, len(sources.videoFiles))
+	uploadedVideoAudios := make([]string, 0, len(sources.videoAudioFiles))
+	uploadedAudios := make([]string, 0, len(sources.audioFiles))
 	for _, header := range sources.imageFiles {
 		input, err := readMultipartFile(header)
 		if err != nil {
@@ -972,18 +1623,21 @@ func (a *TaskAdaptor) collectReferences(c *gin.Context, req relaycommon.TaskSubm
 		if err != nil {
 			return references{}, err
 		}
-		sources.images = append(sources.images, fileName)
+		uploadedImages = append(uploadedImages, fileName)
 	}
 	for _, header := range sources.videoFiles {
 		input, err := readMultipartFile(header)
 		if err != nil {
 			return references{}, err
 		}
+		if err := validateH3ReferenceVideoDuration(input); err != nil {
+			return references{}, err
+		}
 		fileName, err := a.uploadReference(input)
 		if err != nil {
 			return references{}, err
 		}
-		sources.videos = append(sources.videos, fileName)
+		uploadedVideos = append(uploadedVideos, fileName)
 	}
 	for _, header := range sources.videoAudioFiles {
 		input, err := readMultipartFile(header)
@@ -994,7 +1648,7 @@ func (a *TaskAdaptor) collectReferences(c *gin.Context, req relaycommon.TaskSubm
 		if err != nil {
 			return references{}, err
 		}
-		sources.videoAudios = append(sources.videoAudios, fileName)
+		uploadedVideoAudios = append(uploadedVideoAudios, fileName)
 	}
 	for _, header := range sources.audioFiles {
 		input, err := readMultipartFile(header)
@@ -1005,14 +1659,14 @@ func (a *TaskAdaptor) collectReferences(c *gin.Context, req relaycommon.TaskSubm
 		if err != nil {
 			return references{}, err
 		}
-		sources.audios = append(sources.audios, fileName)
+		uploadedAudios = append(uploadedAudios, fileName)
 	}
 
 	images, err := a.resolveReferenceValues(sources.images)
 	if err != nil {
 		return references{}, err
 	}
-	videos, err := a.resolveReferenceValues(sources.videos)
+	videos, err := a.resolveReferenceVideoValues(sources.videos)
 	if err != nil {
 		return references{}, err
 	}
@@ -1024,6 +1678,10 @@ func (a *TaskAdaptor) collectReferences(c *gin.Context, req relaycommon.TaskSubm
 	if err != nil {
 		return references{}, err
 	}
+	images = append(images, uploadedImages...)
+	videos = append(videos, uploadedVideos...)
+	videoAudios = append(videoAudios, uploadedVideoAudios...)
+	audios = append(audios, uploadedAudios...)
 	return references{Images: images, Videos: videos, VideoAudios: videoAudios, Audios: audios}, nil
 }
 
@@ -1112,9 +1770,115 @@ func (a *TaskAdaptor) resolveReferenceValues(values []string) ([]string, error) 
 		if strings.Contains(value, "..") {
 			return nil, fmt.Errorf("reference file name cannot contain '..'")
 		}
+		if a.isGatewayMode() {
+			return nil, fmt.Errorf("ComfyUI H3 gateway reference files must be provided as URLs, data URLs, or multipart uploads")
+		}
 		resolved = append(resolved, value)
 	}
 	return resolved, nil
+}
+
+func (a *TaskAdaptor) resolveReferenceVideoValues(values []string) ([]string, error) {
+	resolved := make([]string, 0, len(values))
+	for _, value := range values {
+		input, err := a.loadReferenceVideo(value)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateH3ReferenceVideoDuration(input); err != nil {
+			return nil, err
+		}
+		fileName, err := a.uploadReference(input)
+		if err != nil {
+			return nil, err
+		}
+		resolved = append(resolved, fileName)
+	}
+	return resolved, nil
+}
+
+func (a *TaskAdaptor) validateReferenceVideoSources(c *gin.Context, req relaycommon.TaskSubmitReq) error {
+	sources, err := referenceInputs(c, req)
+	if err != nil {
+		return err
+	}
+	for _, header := range sources.videoFiles {
+		input, err := readMultipartFile(header)
+		if err != nil {
+			return err
+		}
+		if err := validateH3ReferenceVideoDuration(input); err != nil {
+			return err
+		}
+	}
+	for _, value := range sources.videos {
+		input, err := a.loadReferenceVideo(value)
+		if err != nil {
+			return err
+		}
+		if err := validateH3ReferenceVideoDuration(input); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *TaskAdaptor) loadReferenceVideo(value string) (referenceInput, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return referenceInput{}, fmt.Errorf("reference video is empty")
+	}
+	if isHTTPURL(value) {
+		return downloadReference(value)
+	}
+	if strings.Contains(value, "..") {
+		return referenceInput{}, fmt.Errorf("reference file name cannot contain '..'")
+	}
+	if a.isGatewayMode() {
+		return referenceInput{}, fmt.Errorf("ComfyUI H3 gateway reference videos must be provided as URLs or multipart uploads")
+	}
+
+	fileName := filepath.Base(value)
+	subfolder := strings.Trim(strings.TrimSuffix(value, fileName), "/\\")
+	input, err := downloadComfyInputReference(context.Background(), a.baseURL, fileName, subfolder, a.proxy, maxReferenceBytes())
+	if err != nil {
+		return referenceInput{}, fmt.Errorf("inspect ComfyUI H3 reference video %s: %w", value, err)
+	}
+	return input, nil
+}
+
+func validateH3ReferenceVideoDuration(input referenceInput) error {
+	duration, err := probeH3ReferenceVideoDuration(input)
+	if err != nil {
+		return fmt.Errorf("cannot inspect reference video %s duration: %w", input.Name, err)
+	}
+	if math.IsNaN(duration) || math.IsInf(duration, 0) || duration <= 0 {
+		return fmt.Errorf("reference video %s has an invalid duration", input.Name)
+	}
+	if duration > float64(maxReferenceVideoSeconds)+maxReferenceVideoDurationTolerance {
+		return fmt.Errorf("reference video %s is %.2f seconds; maximum is %d seconds", input.Name, duration, maxReferenceVideoSeconds)
+	}
+	return nil
+}
+
+func ffprobeH3ReferenceVideoDuration(input referenceInput) (float64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), referenceVideoProbeTimeout)
+	defer cancel()
+
+	command := exec.CommandContext(ctx, "ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", "-i", "pipe:0")
+	command.Stdin = bytes.NewReader(input.Data)
+	output, err := command.Output()
+	if ctx.Err() != nil {
+		return 0, ctx.Err()
+	}
+	if err != nil {
+		return 0, fmt.Errorf("ffprobe failed: %w", err)
+	}
+	duration, err := strconv.ParseFloat(strings.TrimSpace(string(output)), 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse ffprobe duration: %w", err)
+	}
+	return duration, nil
 }
 
 func (a *TaskAdaptor) uploadReference(input referenceInput) (string, error) {
@@ -1127,7 +1891,11 @@ func (a *TaskAdaptor) uploadReference(input referenceInput) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	part, err := writer.CreateFormFile("image", uploadName)
+	fieldName := "image"
+	if a.isGatewayMode() {
+		fieldName = "file"
+	}
+	part, err := writer.CreateFormFile(fieldName, uploadName)
 	if err != nil {
 		return "", err
 	}
@@ -1137,19 +1905,32 @@ func (a *TaskAdaptor) uploadReference(input referenceInput) (string, error) {
 	if err := writer.WriteField("type", "input"); err != nil {
 		return "", err
 	}
-	if err := writer.WriteField("overwrite", "false"); err != nil {
-		return "", err
+	if !a.isGatewayMode() {
+		if err := writer.WriteField("overwrite", "false"); err != nil {
+			return "", err
+		}
 	}
 	if err := writer.Close(); err != nil {
 		return "", err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, a.baseURL+uploadPath, &body)
+	uploadURL := a.baseURL + uploadPath
+	if a.isGatewayMode() {
+		uploadURL = a.baseURL + gatewayUploadsPath
+	}
+	req, err := http.NewRequest(http.MethodPost, uploadURL, &body)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("Accept", "application/json")
+	if a.isGatewayMode() {
+		if apiKey := a.gatewayKey(nil); apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+		} else {
+			return "", fmt.Errorf("ComfyUI H3 gateway API token is empty")
+		}
+	}
 	client, err := service.GetHttpClientWithProxy(strings.TrimSpace(a.proxy))
 	if err != nil {
 		return "", err
@@ -1168,7 +1949,21 @@ func (a *TaskAdaptor) uploadReference(input referenceInput) (string, error) {
 		if len(message) > 200 {
 			message = message[:200]
 		}
+		if a.isGatewayMode() {
+			return "", fmt.Errorf("ComfyUI H3 gateway upload failed with status %s: %s", resp.Status, message)
+		}
 		return "", fmt.Errorf("ComfyUI upload failed with status %s: %s", resp.Status, message)
+	}
+	if a.isGatewayMode() {
+		var result gatewayUploadResponse
+		if err := common.Unmarshal(responseBody, &result); err != nil {
+			return "", fmt.Errorf("unmarshal ComfyUI H3 gateway upload response: %w", err)
+		}
+		if strings.TrimSpace(result.UploadID) == "" || strings.TrimSpace(result.File.Name) == "" {
+			return "", fmt.Errorf("ComfyUI H3 gateway upload response missing upload_id or file.name")
+		}
+		a.gatewayUploadIDs = append(a.gatewayUploadIDs, result.UploadID)
+		return result.File.Name, nil
 	}
 	var result struct {
 		Name      string `json:"name"`
@@ -1538,10 +2333,21 @@ func downloadReference(rawURL string) (referenceInput, error) {
 }
 
 func downloadReferenceWithLimit(rawURL string, maxBytes int64) (referenceInput, error) {
+	return downloadReferenceWithLimitContext(context.Background(), rawURL, maxBytes)
+}
+
+func downloadReferenceWithLimitContext(ctx context.Context, rawURL string, maxBytes int64) (referenceInput, error) {
 	if err := service.ValidateSSRFProtectedFetchURL(rawURL); err != nil {
 		return referenceInput{}, err
 	}
-	resp, err := service.GetSSRFProtectedHTTPClient().Get(rawURL)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return referenceInput{}, err
+	}
+	resp, err := service.GetSSRFProtectedHTTPClient().Do(req)
 	if err != nil {
 		return referenceInput{}, err
 	}

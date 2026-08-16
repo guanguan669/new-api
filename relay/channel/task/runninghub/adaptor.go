@@ -480,7 +480,7 @@ func (a *TaskAdaptor) ConvertToOpenAIVideo(task *model.Task) ([]byte, error) {
 		}
 		video.Error = &openaidto.OpenAIVideoError{Message: message, Code: "task_failed"}
 	}
-	return common.Marshal(video)
+	return common.MarshalNoHTMLEscape(video)
 }
 
 func (a *TaskAdaptor) convertRequest(c *gin.Context, req relaycommon.TaskSubmitReq, apiKey string) (*createRequest, error) {

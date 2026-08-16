@@ -159,6 +159,7 @@ func InitOptionMap() {
 	common.OptionMap["GroupRatio"] = ratio_setting.GroupRatio2JSONString()
 	common.OptionMap["GroupGroupRatio"] = ratio_setting.GroupGroupRatio2JSONString()
 	common.OptionMap[ratio_setting.RunningHubH3GroupPriceOptionKey] = ratio_setting.RunningHubH3GroupPrice2JSONString()
+	common.OptionMap[ratio_setting.RunningHubH3GroupTimeDiscountOptionKey] = ratio_setting.RunningHubH3GroupTimeDiscount2JSONString()
 	common.OptionMap["UserUsableGroups"] = setting.UserUsableGroups2JSONString()
 	common.OptionMap["CompletionRatio"] = ratio_setting.CompletionRatio2JSONString()
 	common.OptionMap["ImageRatio"] = ratio_setting.ImageRatio2JSONString()
@@ -320,6 +321,9 @@ func SyncOptions(frequency int) {
 }
 
 func validateLoadedOptionValue(key string, value string) error {
+	if key == ratio_setting.RunningHubH3GroupTimeDiscountOptionKey {
+		return ratio_setting.ValidateRunningHubH3GroupTimeDiscountJSON(value)
+	}
 	if isRunningHubH3GroupPriceOptionKey(key) {
 		return ratio_setting.ValidateRunningHubH3GroupPriceJSON(value)
 	}
@@ -327,6 +331,9 @@ func validateLoadedOptionValue(key string, value string) error {
 }
 
 func validateOptionValue(key string, value string) error {
+	if key == ratio_setting.RunningHubH3GroupTimeDiscountOptionKey {
+		return ratio_setting.ValidateRunningHubH3GroupTimeDiscountJSON(value)
+	}
 	if key == operation_setting.ToolPriceOptionKey {
 		return operation_setting.ValidateToolPricesJSON(value)
 	}
@@ -892,6 +899,8 @@ func updateOptionMap(key string, value string) (err error) {
 		err = ratio_setting.UpdateGroupGroupRatioByJSONString(value)
 	case ratio_setting.RunningHubH3GroupPriceOptionKey:
 		err = ratio_setting.UpdateRunningHubH3GroupPriceByJSONString(value)
+	case ratio_setting.RunningHubH3GroupTimeDiscountOptionKey:
+		err = ratio_setting.UpdateRunningHubH3GroupTimeDiscountByJSONString(value)
 	case "UserUsableGroups":
 		err = setting.UpdateUserUsableGroupsByJSONString(value)
 	case "CompletionRatio":

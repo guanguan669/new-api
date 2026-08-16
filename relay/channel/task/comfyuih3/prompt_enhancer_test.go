@@ -3,6 +3,7 @@ package comfyuih3
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +25,15 @@ func (f promptEnhancerRoundTripper) RoundTrip(request *http.Request) (*http.Resp
 	return f(request)
 }
 
+func setPromptEnhancerMaxWait(t *testing.T, wait time.Duration) {
+	t.Helper()
+	previous := promptEnhancerMaxWait
+	promptEnhancerMaxWait = wait
+	t.Cleanup(func() {
+		promptEnhancerMaxWait = previous
+	})
+}
+
 func TestRequestEnhancedH3PromptSendsContextAndImages(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "/v1/chat/completions", r.URL.Path)
@@ -36,7 +46,9 @@ func TestRequestEnhancedH3PromptSendsContextAndImages(t *testing.T) {
 		require.NoError(t, common.Unmarshal(body, &request))
 		require.Equal(t, "vision-model", request.Model)
 		require.Len(t, request.Messages, 2)
-		require.Equal(t, "system prompt", request.Messages[0].StringContent())
+		require.Equal(t, "system", request.Messages[0].Role)
+		require.Equal(t, model_setting.DefaultComfyUIH3ContextIRSystemPrompt, request.Messages[0].StringContent())
+		require.Equal(t, "user", request.Messages[1].Role)
 		content := request.Messages[1].ParseContent()
 		require.Len(t, content, 4)
 		require.Contains(t, content[0].Text, "Target video duration: 10 seconds")
@@ -58,12 +70,63 @@ func TestRequestEnhancedH3PromptSendsContextAndImages(t *testing.T) {
 			APIKey:         "secret",
 			Model:          "vision-model",
 			TimeoutSeconds: 1,
-			SystemPrompt:   "system prompt",
+			SystemPrompt:   model_setting.DefaultComfyUIH3ContextIRSystemPrompt,
 		},
 		server.Client(),
 	)
 	require.NoError(t, err)
 	require.Contains(t, enhanced, "integrated_multimodal_description: enhanced")
+}
+
+func TestRequestEnhancedH3PromptLabelsFirstAndLastFrameRoles(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		var request openaidto.GeneralOpenAIRequest
+		require.NoError(t, common.Unmarshal(body, &request))
+		content := request.Messages[1].ParseContent()
+		require.Len(t, content, 6)
+		require.Contains(t, content[0].Text, "Generation mode: first-last-frame")
+		require.Contains(t, content[1].Text, "<Picture 1> is the required first frame at 0.000 seconds")
+		require.Contains(t, content[1].Text, "<Picture 2> is the required final rendered frame at 4.958 seconds")
+		require.Contains(t, content[1].Text, "strictly less than 5.000 seconds")
+		require.NotContains(t, content[1].Text, "last frame at 5.00 seconds")
+		require.Equal(t, "<Picture 1>", content[2].Text)
+		require.Equal(t, "<Picture 2>", content[4].Text)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"integrated_multimodal_description: enhanced\noverall_soundscape: N/A\nnon_diegetic_music: N/A"}}]}`))
+	}))
+	defer server.Close()
+
+	image := "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+	_, err := requestEnhancedH3Prompt(
+		context.Background(),
+		relaycommon.TaskSubmitReq{Prompt: "transition between frames", Seconds: "5", Mode: firstLastFrameMode},
+		h3Selector{AspectRatio: "16:9 (Widescreen)", Megapixels: 1, Multiple: 32},
+		[]string{image, image},
+		model_setting.ComfyUIH3PromptEnhancerSettings{
+			BaseURL: server.URL, Model: "vision-model", TimeoutSeconds: 1, SystemPrompt: "system prompt",
+		},
+		server.Client(),
+	)
+	require.NoError(t, err)
+}
+
+func TestFirstLastFramePromptContextAlwaysUsesTimestampBeforeDuration(t *testing.T) {
+	cases := []struct {
+		seconds  int
+		lastTime string
+	}{
+		{seconds: 1, lastTime: "0.958"},
+		{seconds: 5, lastTime: "4.958"},
+		{seconds: 10, lastTime: "9.958"},
+		{seconds: 15, lastTime: "14.958"},
+	}
+	for _, testCase := range cases {
+		contextText := firstLastFramePromptContext(testCase.seconds)
+		require.Contains(t, contextText, fmt.Sprintf("final rendered frame at %s seconds", testCase.lastTime))
+		require.Contains(t, contextText, fmt.Sprintf("strictly less than %d.000 seconds", testCase.seconds))
+	}
 }
 
 func TestRequestEnhancedH3PromptUsesConfiguredChannel(t *testing.T) {
@@ -182,6 +245,75 @@ func TestApplyPromptEnhancementHonorsExplicitFalseAndFallsBack(t *testing.T) {
 	require.Equal(t, 1, calls)
 }
 
+func TestApplyPromptEnhancementLeavesMultiImagePromptUnchangedWhenExplicitlyDisabled(t *testing.T) {
+	originalSettings := model_setting.GetComfyUIH3PromptEnhancerSettings()
+	model_setting.ReplaceComfyUIH3PromptEnhancerSettings(model_setting.ComfyUIH3PromptEnhancerSettings{
+		Enabled: true, BaseURL: "https://enhancer.example", Model: "vision", SystemPrompt: "system", TimeoutSeconds: 1,
+	})
+	t.Cleanup(func() { model_setting.ReplaceComfyUIH3PromptEnhancerSettings(originalSettings) })
+
+	originalEnhancer := enhanceH3Prompt
+	calls := 0
+	enhanceH3Prompt = func(_ context.Context, _ relaycommon.TaskSubmitReq, _ h3Selector, _ []string, _ model_setting.ComfyUIH3PromptEnhancerSettings, _ *http.Client) (string, error) {
+		calls++
+		return "", nil
+	}
+	t.Cleanup(func() { enhanceH3Prompt = originalEnhancer })
+
+	disabled := false
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", nil)
+	prompt := "combine picture one and picture two into one video"
+	result := (&TaskAdaptor{baseURL: "http://comfy.example"}).applyPromptEnhancement(
+		ctx,
+		relaycommon.TaskSubmitReq{
+			Prompt:        prompt,
+			Seconds:       "5",
+			PromptEnhance: &disabled,
+			Images: []string{
+				"https://example.invalid/reference-1.png",
+				"https://example.invalid/reference-2.png",
+			},
+		},
+		h3Selector{AspectRatio: defaultAspect, Megapixels: 1, Multiple: 32},
+	)
+
+	require.Equal(t, 0, calls)
+	require.Equal(t, prompt, result.Prompt)
+}
+
+func TestApplyPromptEnhancementFallbackLeavesMultiImagePromptUnchanged(t *testing.T) {
+	originalSettings := model_setting.GetComfyUIH3PromptEnhancerSettings()
+	model_setting.ReplaceComfyUIH3PromptEnhancerSettings(model_setting.ComfyUIH3PromptEnhancerSettings{
+		Enabled: true, BaseURL: "https://enhancer.example", Model: "vision", SystemPrompt: "system", TimeoutSeconds: 1,
+	})
+	t.Cleanup(func() { model_setting.ReplaceComfyUIH3PromptEnhancerSettings(originalSettings) })
+
+	originalEnhancer := enhanceH3Prompt
+	enhanceH3Prompt = func(_ context.Context, _ relaycommon.TaskSubmitReq, _ h3Selector, _ []string, _ model_setting.ComfyUIH3PromptEnhancerSettings, _ *http.Client) (string, error) {
+		return "", context.DeadlineExceeded
+	}
+	t.Cleanup(func() { enhanceH3Prompt = originalEnhancer })
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", nil)
+	prompt := "combine picture one and picture two into one video"
+	result := (&TaskAdaptor{baseURL: "http://comfy.example"}).applyPromptEnhancement(
+		ctx,
+		relaycommon.TaskSubmitReq{
+			Prompt:  prompt,
+			Seconds: "5",
+			Images: []string{
+				"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+				"data:image/PNG;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+			},
+		},
+		h3Selector{AspectRatio: defaultAspect, Megapixels: 1, Multiple: 32},
+	)
+
+	require.Equal(t, prompt, result.Prompt)
+}
+
 func TestRequestEnhancedH3PromptHonorsTimeout(t *testing.T) {
 	client := &http.Client{Transport: promptEnhancerRoundTripper(func(request *http.Request) (*http.Response, error) {
 		<-request.Context().Done()
@@ -200,6 +332,57 @@ func TestRequestEnhancedH3PromptHonorsTimeout(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, strings.ToLower(err.Error()), "deadline")
 	require.Less(t, time.Since(started), 3*time.Second)
+}
+
+func TestPromptEnhancerRequestTimeoutCapsOptionalEnhancementWait(t *testing.T) {
+	setPromptEnhancerMaxWait(t, promptEnhancerDefaultMaxWait)
+	require.Equal(t, promptEnhancerDefaultMaxWait, promptEnhancerRequestTimeout(model_setting.ComfyUIH3PromptEnhancerSettings{}))
+	require.Equal(t, 3*time.Second, promptEnhancerRequestTimeout(model_setting.ComfyUIH3PromptEnhancerSettings{TimeoutSeconds: 3}))
+	require.Equal(t, promptEnhancerDefaultMaxWait, promptEnhancerRequestTimeout(model_setting.ComfyUIH3PromptEnhancerSettings{TimeoutSeconds: 20}))
+}
+
+func TestApplyPromptEnhancementUsesSingleDeadline(t *testing.T) {
+	setPromptEnhancerMaxWait(t, 40*time.Millisecond)
+	originalSettings := model_setting.GetComfyUIH3PromptEnhancerSettings()
+	settings := model_setting.ComfyUIH3PromptEnhancerSettings{
+		Enabled:      true,
+		ProviderMode: model_setting.ComfyUIH3PromptEnhancerProviderChannel,
+		ChannelID:    27,
+		Model:        "vision-model",
+		SystemPrompt: "system",
+	}
+	model_setting.ReplaceComfyUIH3PromptEnhancerSettings(settings)
+	t.Cleanup(func() { model_setting.ReplaceComfyUIH3PromptEnhancerSettings(originalSettings) })
+
+	originalEnhancer := enhanceH3Prompt
+	enhanceH3Prompt = func(ctx context.Context, _ relaycommon.TaskSubmitReq, _ h3Selector, _ []string, _ model_setting.ComfyUIH3PromptEnhancerSettings, _ *http.Client) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	t.Cleanup(func() { enhanceH3Prompt = originalEnhancer })
+
+	adaptor := &TaskAdaptor{baseURL: "http://comfy.example"}
+	selector := h3Selector{AspectRatio: defaultAspect, Megapixels: 1, Multiple: 32}
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", nil)
+	started := time.Now()
+	result := adaptor.applyPromptEnhancement(ctx, relaycommon.TaskSubmitReq{Prompt: "original", Seconds: "5"}, selector)
+	require.Equal(t, "original", result.Prompt)
+	require.Less(t, time.Since(started), 500*time.Millisecond)
+}
+
+func TestPromptEnhancerImagesHonorContextDeadline(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err := (&TaskAdaptor{baseURL: server.URL}).promptEnhancerImages(ctx, nil, relaycommon.TaskSubmitReq{Images: []string{"reference.png"}})
+	require.Error(t, err)
+	require.Less(t, time.Since(started), 500*time.Millisecond)
 }
 
 func TestPromptEnhancerEndpointRejectsQueryAndBuildsPathSafely(t *testing.T) {

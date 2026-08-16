@@ -36,6 +36,19 @@ func (p *PriceData) AddOtherRatio(key string, ratio float64) {
 	if !isValidOtherRatio(ratio) {
 		return
 	}
+	p.setOtherRatio(key, ratio)
+}
+
+// AddOtherRatioAllowZero is reserved for explicit free-price multipliers.
+// Ordinary ratio sources continue to reject zero through AddOtherRatio.
+func (p *PriceData) AddOtherRatioAllowZero(key string, ratio float64) {
+	if ratio < 0 || math.IsNaN(ratio) || math.IsInf(ratio, 0) {
+		return
+	}
+	p.setOtherRatio(key, ratio)
+}
+
+func (p *PriceData) setOtherRatio(key string, ratio float64) {
 	if p.otherRatios == nil {
 		p.otherRatios = make(map[string]float64)
 	}
@@ -52,7 +65,7 @@ func (p *PriceData) ReplaceOtherRatios(ratios map[string]float64) bool {
 
 func (p *PriceData) HasOtherRatio(key string) bool {
 	ratio, ok := p.otherRatios[key]
-	return ok && isValidOtherRatio(ratio)
+	return ok && (ratio == 0 || isValidOtherRatio(ratio))
 }
 
 func (p *PriceData) OtherRatios() map[string]float64 {
@@ -61,7 +74,7 @@ func (p *PriceData) OtherRatios() map[string]float64 {
 	}
 	ratios := make(map[string]float64, len(p.otherRatios))
 	for key, ratio := range p.otherRatios {
-		if isValidOtherRatio(ratio) {
+		if ratio == 0 || isValidOtherRatio(ratio) {
 			ratios[key] = ratio
 		}
 	}
@@ -74,7 +87,7 @@ func (p *PriceData) OtherRatios() map[string]float64 {
 func (p *PriceData) OtherRatioMultiplier() float64 {
 	multiplier := 1.0
 	for _, ratio := range p.otherRatios {
-		if isValidOtherRatio(ratio) && ratio != 1.0 {
+		if (ratio == 0 || isValidOtherRatio(ratio)) && ratio != 1.0 {
 			multiplier *= ratio
 		}
 	}
@@ -87,7 +100,7 @@ func (p *PriceData) ApplyOtherRatiosToFloat(value float64) float64 {
 
 func (p *PriceData) ApplyOtherRatiosToDecimal(value decimal.Decimal) decimal.Decimal {
 	for _, ratio := range p.otherRatios {
-		if isValidOtherRatio(ratio) && ratio != 1.0 {
+		if (ratio == 0 || isValidOtherRatio(ratio)) && ratio != 1.0 {
 			value = value.Mul(decimal.NewFromFloat(ratio))
 		}
 	}
@@ -96,7 +109,7 @@ func (p *PriceData) ApplyOtherRatiosToDecimal(value decimal.Decimal) decimal.Dec
 
 func (p *PriceData) RemoveOtherRatiosFromFloat(value float64) float64 {
 	for _, ratio := range p.otherRatios {
-		if isValidOtherRatio(ratio) && ratio != 1.0 {
+		if isValidOtherRatio(ratio) && ratio != 0 && ratio != 1.0 {
 			value /= ratio
 		}
 	}

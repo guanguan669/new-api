@@ -257,6 +257,7 @@ export type ModelSettings = {
   UserUsableGroups: string
   GroupGroupRatio: string
   RunningHubH3GroupPrice: string
+  RunningHubH3GroupTimeDiscount: string
   AutoGroups: string
   MaxTokenAutoGroups: number
   DefaultUseAutoGroup: boolean
@@ -313,6 +314,7 @@ export type BillingSettings = {
   UserUsableGroups: string
   GroupGroupRatio: string
   RunningHubH3GroupPrice: string
+  RunningHubH3GroupTimeDiscount: string
   AutoGroups: string
   MaxTokenAutoGroups: number
   DefaultUseAutoGroup: boolean

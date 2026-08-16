@@ -412,7 +412,10 @@ func updateVideoTasks(ctx context.Context, platform constant.TaskPlatform, chann
 	}
 	info := &relaycommon.RelayInfo{}
 	info.ChannelMeta = &relaycommon.ChannelMeta{
-		ChannelBaseUrl: cacheGetChannel.GetBaseURL(),
+		ChannelType:          cacheGetChannel.Type,
+		ChannelBaseUrl:       cacheGetChannel.GetBaseURL(),
+		ApiKey:               cacheGetChannel.Key,
+		ChannelOtherSettings: cacheGetChannel.GetOtherSettings(),
 	}
 	info.ApiKey = cacheGetChannel.Key
 	adaptor.Init(info)
@@ -459,8 +462,33 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	if privateData.Key != "" {
 		key = privateData.Key
 	}
-	if ch.Type == constant.ChannelTypeComfyUIH3 && ch.IsConfiguredComfyUIH3WorkerURL(privateData.UpstreamBaseURL) {
-		baseURL = strings.TrimSpace(privateData.UpstreamBaseURL)
+	if ch.Type == constant.ChannelTypeComfyUIH3 {
+		pollingSettings := ch.GetOtherSettings()
+		gatewayURL := strings.TrimSpace(privateData.UpstreamBaseURL)
+		if privateData.ComfyUIH3Gateway && gatewayURL == "" {
+			gatewayURL = strings.TrimSpace(pollingSettings.ComfyUIH3GatewayURL)
+		}
+		if privateData.ComfyUIH3Gateway && gatewayURL != "" {
+			baseURL = gatewayURL
+			pollingSettings.ComfyUIH3GatewayURL = gatewayURL
+			key = ch.ResolveComfyUIH3GatewayKey(gatewayURL, privateData.Key)
+		} else {
+			// The marker is intentionally task-scoped. Clearing the current
+			// channel gateway here keeps pre-gateway direct tasks on ComfyUI.
+			pollingSettings.ComfyUIH3GatewayURL = ""
+		}
+		if !privateData.ComfyUIH3Gateway && ch.IsConfiguredComfyUIH3WorkerURL(privateData.UpstreamBaseURL) {
+			baseURL = strings.TrimSpace(privateData.UpstreamBaseURL)
+		}
+		adaptor.Init(&relaycommon.RelayInfo{
+			ChannelMeta: &relaycommon.ChannelMeta{
+				ChannelType:          ch.Type,
+				ChannelBaseUrl:       baseURL,
+				ApiKey:               key,
+				ChannelSetting:       ch.GetSetting(),
+				ChannelOtherSettings: pollingSettings,
+			},
+		})
 	}
 	snap := task.Snapshot()
 	var taskResult *relaycommon.TaskInfo
@@ -480,25 +508,32 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 
 	logger.LogDebug(ctx, "updateVideoSingleTask response: %s", responseBody)
 
-	taskResult = &relaycommon.TaskInfo{}
-	// try parse as New API response format
-	var responseItems taskdto.TaskResponse[model.Task]
-	if parseErr := common.Unmarshal(responseBody, &responseItems); parseErr == nil && responseItems.IsSuccess() {
-		logger.LogDebug(ctx, "updateVideoSingleTask parsed as new api response format: %+v", responseItems)
-		t := responseItems.Data
-		taskResult.TaskID = t.TaskID
-		taskResult.Status = string(t.Status)
-		taskResult.Url = t.GetResultURL()
-		taskResult.Progress = t.Progress
-		taskResult.Reason = t.FailReason
-		task.Data = t.Data
-	} else if parsed, parseErr := adaptor.ParseTaskResult(responseBody); parseErr != nil {
-		return fmt.Errorf("parseTaskResult failed for task %s: %w", taskId, parseErr)
+	if isComfyUIH3GatewayTask(ch, privateData) && (resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices) {
+		if !isPermanentComfyUIH3GatewayPollStatus(resp.StatusCode) {
+			return fmt.Errorf("ComfyUI H3 gateway poll returned transient status %d for task %s", resp.StatusCode, taskId)
+		}
+		taskResult = relaycommon.FailTaskInfo(comfyUIH3GatewayPollFailureReason(resp.StatusCode))
+		task.Data = comfyUIH3GatewayPollFailureData(resp.StatusCode)
 	} else {
-		taskResult = parsed
+		taskResult = &relaycommon.TaskInfo{}
+		// try parse as New API response format
+		var responseItems taskdto.TaskResponse[model.Task]
+		if parseErr := common.Unmarshal(responseBody, &responseItems); parseErr == nil && responseItems.IsSuccess() {
+			logger.LogDebug(ctx, "updateVideoSingleTask parsed as new api response format: %+v", responseItems)
+			t := responseItems.Data
+			taskResult.TaskID = t.TaskID
+			taskResult.Status = string(t.Status)
+			taskResult.Url = t.GetResultURL()
+			taskResult.Progress = t.Progress
+			taskResult.Reason = t.FailReason
+			task.Data = t.Data
+		} else if parsed, parseErr := adaptor.ParseTaskResult(responseBody); parseErr != nil {
+			return fmt.Errorf("parseTaskResult failed for task %s: %w", taskId, parseErr)
+		} else {
+			taskResult = parsed
+		}
+		task.Data = redactVideoResponseBody(responseBody)
 	}
-
-	task.Data = redactVideoResponseBody(responseBody)
 
 	logger.LogDebug(ctx, "updateVideoSingleTask taskResult: %+v", taskResult)
 
@@ -604,6 +639,47 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	}
 
 	return nil
+}
+
+func isComfyUIH3GatewayTask(ch *model.Channel, privateData model.TaskPrivateData) bool {
+	return ch != nil && ch.Type == constant.ChannelTypeComfyUIH3 && privateData.ComfyUIH3Gateway
+}
+
+func isPermanentComfyUIH3GatewayPollStatus(status int) bool {
+	switch status {
+	case http.StatusBadRequest,
+		http.StatusNotFound,
+		http.StatusGone,
+		http.StatusUnprocessableEntity:
+		return true
+	default:
+		return false
+	}
+}
+
+func comfyUIH3GatewayPollFailureReason(status int) string {
+	message := "gateway rejected the task query"
+	switch status {
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+		message = "invalid gateway task query"
+	case http.StatusNotFound:
+		message = "gateway task not found"
+	case http.StatusGone:
+		message = "gateway task is no longer available"
+	}
+	return fmt.Sprintf("ComfyUI H3 %s (status %d)", message, status)
+}
+
+func comfyUIH3GatewayPollFailureData(status int) []byte {
+	payload := map[string]any{
+		"error":       "gateway_task_query_rejected",
+		"status_code": status,
+	}
+	body, err := common.Marshal(payload)
+	if err != nil {
+		return nil
+	}
+	return body
 }
 
 func redactVideoResponseBody(body []byte) []byte {

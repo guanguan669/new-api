@@ -17,11 +17,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 
 import { useStatus } from '@/hooks/use-status'
 
 import { getPricing } from '../api'
+import {
+  applyRunningHubH3TimeDiscounts,
+  getH3DiscountRefreshDelay,
+} from '../lib/h3-time-discount'
 
 export function usePricingData() {
   const { status } = useStatus()
@@ -62,6 +66,26 @@ export function usePricingData() {
     })
   }, [data])
 
+  const runningHubH3GroupTimeDiscounts = useMemo(
+    () => data?.runninghub_h3_group_time_discounts ?? {},
+    [data?.runninghub_h3_group_time_discounts]
+  )
+  const runningHubH3GroupPrices = useMemo(
+    () =>
+      applyRunningHubH3TimeDiscounts(
+        data?.runninghub_h3_group_prices ?? {},
+        runningHubH3GroupTimeDiscounts
+      ),
+    [data?.runninghub_h3_group_prices, runningHubH3GroupTimeDiscounts]
+  )
+
+  useEffect(() => {
+    const delay = getH3DiscountRefreshDelay(runningHubH3GroupTimeDiscounts)
+    if (delay === null) return undefined
+    const timeout = window.setTimeout(() => void refetch(), delay)
+    return () => window.clearTimeout(timeout)
+  }, [refetch, runningHubH3GroupTimeDiscounts])
+
   return {
     models,
     vendors: data?.vendors ?? [],
@@ -69,7 +93,7 @@ export function usePricingData() {
     usableGroup: data?.usable_group ?? {},
     endpointMap: data?.supported_endpoint ?? {},
     autoGroups: data?.auto_groups ?? [],
-    runningHubH3GroupPrices: data?.runninghub_h3_group_prices ?? {},
+    runningHubH3GroupPrices,
     h3PricingPlan: data?.h3_pricing_plan?.trim() ?? '',
     isLoading,
     error,

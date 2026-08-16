@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import type { ColumnDef } from '@tanstack/react-table'
-import { Music } from 'lucide-react'
+import { ExternalLink, Music } from 'lucide-react'
 /* eslint-disable react-refresh/only-export-components */
 import { useState, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -245,17 +245,19 @@ export function useTaskLogsColumns(isAdmin: boolean): ColumnDef<TaskLog>[] {
           log.action === TASK_ACTIONS.REFERENCE_GENERATE ||
           log.action === TASK_ACTIONS.REMIX_GENERATE
         const isSuccess = status === TASK_STATUS.SUCCESS
-        const isUrl = failReason?.startsWith('http')
+        const hasVideoResult = Boolean(log.result_url?.trim())
 
-        if (isSuccess && isVideoTask && isUrl) {
-          const videoUrl = `/v1/videos/${log.task_id}/content`
+        if (isSuccess && isVideoTask && hasVideoResult) {
+          const videoUrl = log.result_url!.trim()
           return (
             <a
               href={videoUrl}
               target='_blank'
               rel='noopener noreferrer'
-              className='text-foreground text-xs hover:underline'
+              className='text-foreground inline-flex items-center gap-1 text-xs hover:underline'
+              title={videoUrl}
             >
+              <ExternalLink className='size-3 shrink-0' aria-hidden='true' />
               {t('Click to preview video')}
             </a>
           )

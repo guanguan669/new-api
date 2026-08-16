@@ -41,3 +41,16 @@ func TestJsonRawMessageToString(t *testing.T) {
 		})
 	}
 }
+
+func TestMarshalNoHTMLEscapePreservesURLQuerySeparators(t *testing.T) {
+	data, err := MarshalNoHTMLEscape(map[string]string{
+		"url": "https://api.example.com/v1/videos/task/content?expires=1&signature=abc&user_id=42",
+	})
+	require.NoError(t, err)
+	require.Contains(t, string(data), "&signature=abc&user_id=42")
+	require.NotContains(t, string(data), `\u0026`)
+
+	var decoded map[string]string
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	require.Equal(t, "https://api.example.com/v1/videos/task/content?expires=1&signature=abc&user_id=42", decoded["url"])
+}

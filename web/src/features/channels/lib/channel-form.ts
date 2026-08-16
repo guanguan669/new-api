@@ -101,6 +101,31 @@ function isOptionalComfyUIH3BackendURLs(value: string | undefined): boolean {
   })
 }
 
+function normalizeOptionalHTTPBaseURL(value: string | undefined): string {
+  return String(value || '')
+    .trim()
+    .replace(/\/+$/, '')
+}
+
+function isOptionalHTTPBaseURL(value: string | undefined): boolean {
+  const normalizedURL = normalizeOptionalHTTPBaseURL(value)
+  if (!normalizedURL) return true
+
+  try {
+    const parsedURL = new URL(normalizedURL)
+    return (
+      (parsedURL.protocol === 'http:' || parsedURL.protocol === 'https:') &&
+      Boolean(parsedURL.hostname) &&
+      parsedURL.username === '' &&
+      parsedURL.password === '' &&
+      parsedURL.search === '' &&
+      parsedURL.hash === ''
+    )
+  } catch {
+    return false
+  }
+}
+
 export const HTTP_PROTOCOL_AUTO = 'auto'
 export const HTTP_PROTOCOL_HTTP1 = 'http1'
 export const MAX_HTTP2_CONNECTION_SHARDS = 8
@@ -302,6 +327,7 @@ export const channelFormSchema = z
     runninghub_workflow_id: z.string().optional(), // RunningHub image-to-video workflow
     runninghub_text_workflow_id: z.string().optional(), // RunningHub text-to-video workflow
     comfyui_h3_backend_urls: z.string().optional(),
+    comfyui_h3_gateway_url: z.string().optional(),
     // Field passthrough controls (stored in settings JSON)
     allow_service_tier: z.boolean().optional(), // OpenAI/Anthropic
     disable_store: z.boolean().optional(), // OpenAI only
@@ -398,6 +424,16 @@ export const channelFormSchema = z
         ctx,
         'comfyui_h3_backend_urls',
         'Each ComfyUI worker URL must be a valid HTTP(S) base URL'
+      )
+    }
+    if (
+      data.type === CHANNEL_TYPE_COMFYUI_H3 &&
+      !isOptionalHTTPBaseURL(data.comfyui_h3_gateway_url)
+    ) {
+      addRequiredIssue(
+        ctx,
+        'comfyui_h3_gateway_url',
+        'H3 central gateway URL must be a valid HTTP(S) base URL without credentials, query, or fragment'
       )
     }
 
@@ -511,6 +547,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   runninghub_workflow_id: '',
   runninghub_text_workflow_id: '',
   comfyui_h3_backend_urls: '',
+  comfyui_h3_gateway_url: '',
   // Field passthrough controls
   allow_service_tier: false,
   disable_store: false,
@@ -591,6 +628,7 @@ export function transformChannelToFormDefaults(
   let runninghubWorkflowId = ''
   let runninghubTextWorkflowId = ''
   let comfyUIH3BackendURLs = ''
+  let comfyUIH3GatewayURL = ''
 
   if (channel.settings) {
     try {
@@ -623,6 +661,10 @@ export function transformChannelToFormDefaults(
             .filter((url: unknown) => typeof url === 'string')
             .join('\n')
         : ''
+      comfyUIH3GatewayURL =
+        typeof parsed.comfyui_h3_gateway_url === 'string'
+          ? parsed.comfyui_h3_gateway_url
+          : ''
       if (parsed.advanced_custom) {
         advancedCustom = stringifyAdvancedCustomConfig(parsed.advanced_custom)
       }
@@ -680,6 +722,7 @@ export function transformChannelToFormDefaults(
     runninghub_workflow_id: runninghubWorkflowId,
     runninghub_text_workflow_id: runninghubTextWorkflowId,
     comfyui_h3_backend_urls: comfyUIH3BackendURLs,
+    comfyui_h3_gateway_url: comfyUIH3GatewayURL,
   }
 }
 
@@ -777,8 +820,17 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     } else {
       delete settingsObj.comfyui_h3_backend_urls
     }
+    const gatewayURL = normalizeOptionalHTTPBaseURL(
+      formData.comfyui_h3_gateway_url
+    )
+    if (gatewayURL) {
+      settingsObj.comfyui_h3_gateway_url = gatewayURL
+    } else {
+      delete settingsObj.comfyui_h3_gateway_url
+    }
   } else {
     delete settingsObj.comfyui_h3_backend_urls
+    delete settingsObj.comfyui_h3_gateway_url
   }
 
   // Field passthrough controls:

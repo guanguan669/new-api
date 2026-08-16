@@ -2,12 +2,16 @@ package relay
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -19,6 +23,8 @@ import (
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	"github.com/QuantumNous/new-api/setting/system_setting"
 	hosttypes "github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 )
@@ -41,6 +47,8 @@ type taskPriceDataOverrider interface {
 type taskSubmissionAborter interface {
 	AbortTaskSubmission()
 }
+
+const h3TimeDiscountContextKey = "h3_time_discount"
 
 // ResolveOriginTask 处理基于已有任务的提交（remix / continuation）：
 // 查找原始任务、从中提取模型名称、将渠道锁定到原始任务的渠道
@@ -239,6 +247,22 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		}
 	}
 
+	// Freeze the H3 service-group discount after PriceData construction. Custom
+	// prices and generic fallback prices therefore share the same submission
+	// snapshot, and retries retain the first resolved value.
+	h3TimeDiscount := 1.0
+	if modelName == "minimax_h3" {
+		frozen, exists := c.Get(h3TimeDiscountContextKey)
+		frozenMultiplier, validFrozenMultiplier := frozen.(float64)
+		if exists && validFrozenMultiplier {
+			h3TimeDiscount = frozenMultiplier
+		} else {
+			h3TimeDiscount = ratio_setting.ResolveRunningHubH3GroupTimeDiscount(info.UsingGroup, time.Now()).Multiplier
+			c.Set(h3TimeDiscountContextKey, h3TimeDiscount)
+		}
+		applyH3TimeDiscount(info, h3TimeDiscount, priceDataReady)
+	}
+
 	// 6. 将 OtherRatios 应用到基础额度（饱和转换，防止溢出成负数）
 	if !priceDataReady && !common.StringsContains(constant.TaskPricePatches, modelName) {
 		quotaWithRatios := info.PriceData.ApplyOtherRatiosToFloat(float64(info.PriceData.Quota))
@@ -266,7 +290,10 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	if err != nil {
 		return nil, service.TaskErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
 	}
-	if resp != nil && resp.StatusCode != http.StatusOK {
+	// Task providers may accept an asynchronous submission with 202 Accepted.
+	// Treat every successful HTTP status as a valid handoff and leave provider-
+	// specific response validation to the task adaptor.
+	if resp != nil && (resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices) {
 		responseBody, _ := io.ReadAll(resp.Body)
 		return nil, service.TaskErrorWrapper(fmt.Errorf("%s", string(responseBody)), "fail_to_fetch_task", resp.StatusCode)
 	}
@@ -288,7 +315,13 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	// 11. 提交后计费调整：让适配器根据上游实际返回调整 OtherRatios
 	finalQuota := info.PriceData.Quota
 	if adjustedRatios := adaptor.AdjustBillingOnSubmit(info, taskData); len(adjustedRatios) > 0 {
-		if adjustedQuota, ok := recalcQuotaFromRatios(info, adjustedRatios); ok {
+		preserveH3TimeDiscount(adjustedRatios, modelName, h3TimeDiscount)
+		if h3TimeDiscount == 0 {
+			info.PriceData.ReplaceOtherRatios(adjustedRatios)
+			info.PriceData.AddOtherRatioAllowZero(h3TimeDiscountContextKey, 0)
+			info.PriceData.Quota = 0
+			finalQuota = 0
+		} else if adjustedQuota, ok := recalcQuotaFromRatios(info, adjustedRatios); ok {
 			// 基于调整后的 ratios 重新计算 quota
 			finalQuota = adjustedQuota
 			info.PriceData.ReplaceOtherRatios(adjustedRatios)
@@ -312,6 +345,24 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	}
 	submitSucceeded = true
 	return result, nil
+}
+
+func applyH3TimeDiscount(info *relaycommon.RelayInfo, multiplier float64, priceDataReady bool) {
+	info.PriceData.AddOtherRatioAllowZero(h3TimeDiscountContextKey, multiplier)
+	if priceDataReady {
+		quota, clamp := common.QuotaFromFloatChecked(info.PriceData.ApplyOtherRatiosToFloat(info.PriceData.ModelPrice * common.QuotaPerUnit))
+		info.PriceData.Quota = quota
+		noteTaskQuotaClamp(info, clamp)
+	}
+	if multiplier == 0 {
+		info.PriceData.FreeModel = true
+	}
+}
+
+func preserveH3TimeDiscount(ratios map[string]float64, modelName string, multiplier float64) {
+	if modelName == "minimax_h3" {
+		ratios[h3TimeDiscountContextKey] = multiplier
+	}
 }
 
 // recalcQuotaFromRatios 根据 adjustedRatios 重新计算 quota。
@@ -439,6 +490,7 @@ func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *d
 		taskResp = service.TaskErrorWrapperLocal(errors.New("task_not_exist"), "task_not_exist", http.StatusBadRequest)
 		return
 	}
+	responseTask := taskWithPublicResultURL(c, originTask)
 
 	isOpenAIVideoAPI := strings.HasPrefix(c.Request.RequestURI, "/v1/videos/")
 
@@ -450,13 +502,13 @@ func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *d
 
 	// OpenAI Video API 格式: 走各 adaptor 的 ConvertToOpenAIVideo
 	if isOpenAIVideoAPI {
-		adaptor := GetTaskAdaptor(originTask.Platform)
+		adaptor := GetTaskAdaptor(responseTask.Platform)
 		if adaptor == nil {
-			taskResp = service.TaskErrorWrapperLocal(fmt.Errorf("invalid channel id: %d", originTask.ChannelId), "invalid_channel_id", http.StatusBadRequest)
+			taskResp = service.TaskErrorWrapperLocal(fmt.Errorf("invalid channel id: %d", responseTask.ChannelId), "invalid_channel_id", http.StatusBadRequest)
 			return
 		}
 		if converter, ok := adaptor.(channel.OpenAIVideoConverter); ok {
-			openAIVideoData, err := converter.ConvertToOpenAIVideo(originTask)
+			openAIVideoData, err := converter.ConvertToOpenAIVideo(responseTask)
 			if err != nil {
 				taskResp = service.TaskErrorWrapper(err, "convert_to_openai_video_failed", http.StatusInternalServerError)
 				return
@@ -469,12 +521,12 @@ func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *d
 	}
 
 	// 通用 TaskDto 格式
-	taskDto := TaskModel2Dto(originTask)
-	if err := addTaskOutputMetadata(originTask, taskDto); err != nil {
+	taskDto := TaskModel2Dto(responseTask)
+	if err := addTaskOutputMetadata(responseTask, taskDto); err != nil {
 		taskResp = service.TaskErrorWrapper(err, "marshal_response_failed", http.StatusInternalServerError)
 		return
 	}
-	respBody, err = common.Marshal(dto.TaskResponse[any]{
+	respBody, err = common.MarshalNoHTMLEscape(dto.TaskResponse[any]{
 		Code: "success",
 		Data: taskDto,
 	})
@@ -482,6 +534,84 @@ func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *d
 		taskResp = service.TaskErrorWrapper(err, "marshal_response_failed", http.StatusInternalServerError)
 	}
 	return
+}
+
+// taskWithPublicResultURL keeps internal worker and gateway URLs private. The
+// raw URL stays on the original task so VideoProxy can fetch it server-side.
+func taskWithPublicResultURL(c *gin.Context, task *model.Task) *model.Task {
+	if task == nil {
+		return task
+	}
+	isGatewayTask := task.PrivateData.ComfyUIH3Gateway
+	shouldProxyGatewayResult := task.Status == model.TaskStatusSuccess && isGatewayTask
+	shouldProxyLoopbackResult := isLoopbackResultURL(task.GetResultURL())
+	if !isGatewayTask && !shouldProxyLoopbackResult {
+		return task
+	}
+	publicTask := *task
+	publicTask.PrivateData = task.PrivateData
+	if isGatewayTask {
+		publicTask.Data = redactComfyUIH3GatewayPublicData(task.Data)
+	}
+	if !shouldProxyGatewayResult && !shouldProxyLoopbackResult {
+		return &publicTask
+	}
+	contentURL := buildPublicTaskContentURL(c, task.TaskID)
+	if signedURL, err := service.BuildSignedVideoContentURL(contentURL, task.TaskID, task.UserId); err == nil {
+		contentURL = signedURL
+	}
+	publicTask.PrivateData.ResultURL = contentURL
+	return &publicTask
+}
+
+func redactComfyUIH3GatewayPublicData(data []byte) []byte {
+	if len(data) == 0 {
+		return data
+	}
+	var payload map[string]any
+	if err := common.Unmarshal(data, &payload); err != nil {
+		return json.RawMessage(`{}`)
+	}
+	if _, exists := payload["view_endpoint"]; !exists {
+		return data
+	}
+	delete(payload, "view_endpoint")
+	redacted, err := common.Marshal(payload)
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return redacted
+}
+
+func isLoopbackResultURL(rawURL string) bool {
+	rawURL = strings.TrimSpace(rawURL)
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil || parsedURL.Hostname() == "" {
+		parsedURL, err = url.Parse("//" + rawURL)
+		if err != nil {
+			return false
+		}
+	}
+	host := strings.TrimSuffix(strings.ToLower(parsedURL.Hostname()), ".")
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func buildPublicTaskContentURL(c *gin.Context, taskID string) string {
+	if serverAddress := strings.TrimRight(strings.TrimSpace(system_setting.ServerAddress), "/"); serverAddress != "" && !isLoopbackResultURL(serverAddress) {
+		return fmt.Sprintf("%s/v1/videos/%s/content", serverAddress, url.PathEscape(taskID))
+	}
+	if c == nil || c.Request == nil || strings.TrimSpace(c.Request.Host) == "" {
+		return taskcommon.BuildProxyURL(taskID)
+	}
+	scheme := "http"
+	if c.Request.TLS != nil {
+		scheme = "https"
+	}
+	return fmt.Sprintf("%s://%s/v1/videos/%s/content", scheme, c.Request.Host, url.PathEscape(taskID))
 }
 
 // addTaskOutputMetadata adds normalized output fields to the public task data.
@@ -660,4 +790,11 @@ func TaskModel2Dto(task *model.Task) *dto.TaskDto {
 		Username:   task.Username,
 		Data:       task.Data,
 	}
+}
+
+// TaskModel2PublicDto returns a task DTO suitable for browser-facing task
+// history and log APIs. It replaces internal H3 result locations with an
+// expiring NewAPI content URL while keeping the persisted task unchanged.
+func TaskModel2PublicDto(c *gin.Context, task *model.Task) *dto.TaskDto {
+	return TaskModel2Dto(taskWithPublicResultURL(c, task))
 }

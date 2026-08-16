@@ -70,6 +70,7 @@ type GroupFormValues = {
   UserUsableGroups: string
   GroupGroupRatio: string
   RunningHubH3GroupPrice: string
+  RunningHubH3GroupTimeDiscount: string
   AutoGroups: string
   MaxTokenAutoGroups: number
   DefaultUseAutoGroup: boolean
@@ -173,6 +174,9 @@ export const GroupRatioForm = memo(function GroupRatioForm({
               userUsableGroups={form.watch('UserUsableGroups')}
               groupGroupRatio={form.watch('GroupGroupRatio')}
               runningHubH3GroupPrice={form.watch('RunningHubH3GroupPrice')}
+              runningHubH3GroupTimeDiscount={form.watch(
+                'RunningHubH3GroupTimeDiscount'
+              )}
               autoGroups={form.watch('AutoGroups')}
               maxTokenAutoGroupsField={
                 <FormField
@@ -368,6 +372,32 @@ export const GroupRatioForm = memo(function GroupRatioForm({
                     )}{' '}
                     {`{ "vip-tier": { "price_768p": 0.1, "price_2k": 0.3, "group": "vip" } }`}
                     .
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name='RunningHubH3GroupTimeDiscount'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('H3 peak and valley discounts')}</FormLabel>
+                  <FormControl>
+                    <JsonCodeEditor
+                      value={field.value}
+                      onChange={field.onChange}
+                      name={field.name}
+                      onBlur={field.onBlur}
+                      textareaRef={field.ref}
+                      heightClassName='h-40 min-h-40 max-h-40'
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      'JSON map of service group to daily H3 time rules in Asia/Shanghai time. A multiplier of 0 is free and 0.8 means 20% off.'
+                    )}
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

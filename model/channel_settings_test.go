@@ -124,4 +124,28 @@ func TestComfyUIH3ChannelWorkerURLSettings(t *testing.T) {
 		"http://worker-a.internal:5900/",
 	}})
 	require.ErrorContains(t, channel.ValidateSettings(), "duplicate ComfyUI H3 worker URL")
+
+	channel.SetOtherSettings(dto.ChannelOtherSettings{ComfyUIH3GatewayURL: "http://gateway.internal:8090"})
+	require.NoError(t, channel.ValidateSettings())
+
+	channel.SetOtherSettings(dto.ChannelOtherSettings{ComfyUIH3GatewayURL: "gateway.internal:8090"})
+	require.ErrorContains(t, channel.ValidateSettings(), "invalid ComfyUI H3 gateway URL")
+}
+
+func TestResolveComfyUIH3GatewayKeyUsesCurrentKeyOnlyForSameGateway(t *testing.T) {
+	baseURL := "http://worker.internal:5900"
+	channel := &Channel{Type: constant.ChannelTypeComfyUIH3, BaseURL: &baseURL, Key: "current-key"}
+	channel.SetOtherSettings(dto.ChannelOtherSettings{ComfyUIH3GatewayURL: "http://gateway.internal:8090/"})
+
+	require.Equal(t, "current-key", channel.ResolveComfyUIH3GatewayKey("http://gateway.internal:8090", "stored-key"))
+	require.Equal(t, "stored-key", channel.ResolveComfyUIH3GatewayKey("http://old-gateway.internal:8090", "stored-key"))
+}
+
+func TestResolveComfyUIH3GatewayKeyHandlesMultiKeyRotation(t *testing.T) {
+	channel := &Channel{Type: constant.ChannelTypeComfyUIH3, Key: "key-a\nkey-b"}
+	channel.ChannelInfo.IsMultiKey = true
+	channel.SetOtherSettings(dto.ChannelOtherSettings{ComfyUIH3GatewayURL: "http://gateway.internal:8090"})
+
+	require.Equal(t, "key-b", channel.ResolveComfyUIH3GatewayKey("http://gateway.internal:8090", "key-b"))
+	require.Equal(t, "key-a", channel.ResolveComfyUIH3GatewayKey("http://gateway.internal:8090", "retired-key"))
 }

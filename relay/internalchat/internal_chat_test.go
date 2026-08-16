@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -158,6 +159,50 @@ func TestExecuteUsesExactChannelMappingAndReturnsOpenAIResponse(t *testing.T) {
 	assert.Equal(t, "mapped-model", upstreamModel)
 	require.Len(t, response.Choices, 1)
 	assert.Equal(t, "enhanced prompt", response.Choices[0].Message.StringContent())
+}
+
+func TestExecuteHonorsContextDeadline(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseHandler := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(requestStarted)
+		select {
+		case <-r.Context().Done():
+		case <-releaseHandler:
+		}
+	}))
+	defer server.Close()
+	defer close(releaseHandler)
+
+	baseURL := server.URL
+	originalGetter := getChannelByID
+	getChannelByID = func(id int, selectAll bool) (*model.Channel, error) {
+		channel := testChannel(id, constant.ChannelTypeOpenAI, common.ChannelStatusEnabled, "visible-model")
+		channel.Key = "upstream-secret"
+		channel.BaseURL = &baseURL
+		return channel, nil
+	}
+	t.Cleanup(func() { getChannelByID = originalGetter })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, err := Execute(ctx, 42, &dto.GeneralOpenAIRequest{
+			Model:    "visible-model",
+			Messages: []dto.Message{{Role: "user", Content: "hello"}},
+		})
+		result <- err
+	}()
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("upstream request did not start")
+	}
+	started := time.Now()
+	err := <-result
+	require.Error(t, err)
+	require.Less(t, time.Since(started), time.Second)
 }
 
 func TestExecuteUsesResponsesRouteWhenChannelPolicyRequiresIt(t *testing.T) {

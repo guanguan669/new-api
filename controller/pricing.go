@@ -2,6 +2,7 @@ package controller
 
 import (
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -83,6 +84,14 @@ func hasUsableBoundGroup(usableGroup map[string]string, boundGroup string) bool 
 	return ok
 }
 
+func resolveRunningHubH3GroupTimeDiscounts(usableGroup map[string]string, now time.Time) map[string]ratio_setting.RunningHubH3GroupTimeDiscountState {
+	states := make(map[string]ratio_setting.RunningHubH3GroupTimeDiscountState, len(usableGroup))
+	for group := range usableGroup {
+		states[group] = ratio_setting.ResolveRunningHubH3GroupTimeDiscount(group, now)
+	}
+	return states
+}
+
 func GetPricing(c *gin.Context) {
 	pricing := model.GetPricing()
 	userId, exists := c.Get("id")
@@ -118,16 +127,17 @@ func GetPricing(c *gin.Context) {
 	}
 
 	c.JSON(200, gin.H{
-		"success":                    true,
-		"data":                       pricing,
-		"vendors":                    model.GetVendors(),
-		"group_ratio":                groupRatio,
-		"usable_group":               usableGroup,
-		"supported_endpoint":         model.GetSupportedEndpointMap(),
-		"auto_groups":                service.GetUserAutoGroup(group),
-		"runninghub_h3_group_prices": runningHubH3Prices,
-		"h3_pricing_plan":            h3PricingPlan,
-		"pricing_version":            "a42d372ccf0b5dd13ecf71203521f9d2",
+		"success":                            true,
+		"data":                               pricing,
+		"vendors":                            model.GetVendors(),
+		"group_ratio":                        groupRatio,
+		"usable_group":                       usableGroup,
+		"supported_endpoint":                 model.GetSupportedEndpointMap(),
+		"auto_groups":                        service.GetUserAutoGroup(group),
+		"runninghub_h3_group_prices":         runningHubH3Prices,
+		"runninghub_h3_group_time_discounts": resolveRunningHubH3GroupTimeDiscounts(usableGroup, time.Now()),
+		"h3_pricing_plan":                    h3PricingPlan,
+		"pricing_version":                    "a42d372ccf0b5dd13ecf71203521f9d2",
 	})
 }
 

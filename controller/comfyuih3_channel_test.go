@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relay/channel/task/comfyuih3"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/stretchr/testify/require"
 )
 
@@ -41,6 +42,50 @@ func TestComfyUIH3ChannelRegistrationAndCapabilityCheck(t *testing.T) {
 	models, err := fetchComfyUIH3UpstreamModelIDs(channel, server.URL)
 	require.NoError(t, err)
 	require.Equal(t, []string{"minimax_h3"}, models)
+}
+
+func TestComfyUIH3GatewayChannelCheckUsesBearerAndAcceptsGatewayTaskNotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/api/gateway/tasks/__newapi_channel_probe__", r.URL.Path)
+		require.Equal(t, "Bearer gateway-secret", r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"detail":"dispatch task not found"}`))
+	}))
+	defer server.Close()
+
+	baseURL := "http://direct-worker.invalid:5900"
+	channel := &model.Channel{Type: constant.ChannelTypeComfyUIH3, BaseURL: &baseURL, Key: "gateway-secret"}
+	channel.SetOtherSettings(dto.ChannelOtherSettings{ComfyUIH3GatewayURL: server.URL})
+	require.NoError(t, validateComfyUIH3ChannelWorkers(context.Background(), channel))
+}
+
+func TestComfyUIH3GatewayChannelCheckRejectsGenericNotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`not the H3 gateway`))
+	}))
+	defer server.Close()
+
+	baseURL := "http://direct-worker.invalid:5900"
+	channel := &model.Channel{Type: constant.ChannelTypeComfyUIH3, BaseURL: &baseURL, Key: "gateway-secret"}
+	channel.SetOtherSettings(dto.ChannelOtherSettings{ComfyUIH3GatewayURL: server.URL})
+	err := validateComfyUIH3ChannelWorkers(context.Background(), channel)
+	require.ErrorContains(t, err, "404")
+}
+
+func TestComfyUIH3GatewayChannelCheckRejectsUnauthorized(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"detail":"invalid token"}`))
+	}))
+	defer server.Close()
+
+	baseURL := "http://direct-worker.invalid:5900"
+	channel := &model.Channel{Type: constant.ChannelTypeComfyUIH3, BaseURL: &baseURL, Key: "bad-secret"}
+	channel.SetOtherSettings(dto.ChannelOtherSettings{ComfyUIH3GatewayURL: server.URL})
+	err := validateComfyUIH3ChannelWorkers(context.Background(), channel)
+	require.ErrorContains(t, err, "authentication failed")
+	require.ErrorContains(t, err, "401")
 }
 
 func TestComfyUIH3ChannelCapabilityCheckRejectsMissingAssetsAndNodeDefinition(t *testing.T) {

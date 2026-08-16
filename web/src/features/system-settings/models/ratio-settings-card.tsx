@@ -33,6 +33,7 @@ import { SettingsSection } from '../components/settings-section'
 import { useUpdateOption } from '../hooks/use-update-option'
 import { positiveIntegerSchema } from '../utils/numeric-field'
 import { GroupRatioForm } from './group-ratio-form'
+import { isValidH3TimeDiscountMap } from './h3-time-discount'
 import { ModelRatioForm } from './model-ratio-form'
 import { ToolPriceSettings } from './tool-price-settings'
 import { UpstreamRatioSync } from './upstream-ratio-sync'
@@ -148,6 +149,11 @@ const createGroupSchema = (t: Translate) =>
       predicateMessage:
         'Expected a JSON object: tier -> { price_768p, price_2k, group? } with non-negative prices',
     }),
+    RunningHubH3GroupTimeDiscount: createJsonStringField(t, {
+      predicate: isValidH3TimeDiscountMap,
+      predicateMessage:
+        'Expected non-overlapping daily rules: group -> [{ start, end, discount }]',
+    }),
     AutoGroups: createJsonStringField(t, {
       predicate: (parsed) =>
         Array.isArray(parsed) &&
@@ -231,6 +237,9 @@ export function RatioSettingsCard({
     RunningHubH3GroupPrice: normalizeJsonString(
       groupDefaults.RunningHubH3GroupPrice
     ),
+    RunningHubH3GroupTimeDiscount: normalizeJsonString(
+      groupDefaults.RunningHubH3GroupTimeDiscount
+    ),
     AutoGroups: normalizeJsonString(groupDefaults.AutoGroups),
     MaxTokenAutoGroups: groupDefaults.MaxTokenAutoGroups,
     DefaultUseAutoGroup: groupDefaults.DefaultUseAutoGroup,
@@ -272,6 +281,9 @@ export function RatioSettingsCard({
       GroupGroupRatio: formatJsonForTextarea(groupDefaults.GroupGroupRatio),
       RunningHubH3GroupPrice: formatJsonForTextarea(
         groupDefaults.RunningHubH3GroupPrice
+      ),
+      RunningHubH3GroupTimeDiscount: formatJsonForTextarea(
+        groupDefaults.RunningHubH3GroupTimeDiscount
       ),
       AutoGroups: formatJsonForTextarea(groupDefaults.AutoGroups),
       GroupSpecialUsableGroup: formatJsonForTextarea(
@@ -324,6 +336,9 @@ export function RatioSettingsCard({
       RunningHubH3GroupPrice: normalizeJsonString(
         groupDefaults.RunningHubH3GroupPrice
       ),
+      RunningHubH3GroupTimeDiscount: normalizeJsonString(
+        groupDefaults.RunningHubH3GroupTimeDiscount
+      ),
       AutoGroups: normalizeJsonString(groupDefaults.AutoGroups),
       MaxTokenAutoGroups: groupDefaults.MaxTokenAutoGroups,
       DefaultUseAutoGroup: groupDefaults.DefaultUseAutoGroup,
@@ -340,6 +355,9 @@ export function RatioSettingsCard({
       GroupGroupRatio: formatJsonForTextarea(groupDefaults.GroupGroupRatio),
       RunningHubH3GroupPrice: formatJsonForTextarea(
         groupDefaults.RunningHubH3GroupPrice
+      ),
+      RunningHubH3GroupTimeDiscount: formatJsonForTextarea(
+        groupDefaults.RunningHubH3GroupTimeDiscount
       ),
       AutoGroups: formatJsonForTextarea(groupDefaults.AutoGroups),
       GroupSpecialUsableGroup: formatJsonForTextarea(
@@ -401,6 +419,9 @@ export function RatioSettingsCard({
         RunningHubH3GroupPrice: normalizeJsonString(
           values.RunningHubH3GroupPrice
         ),
+        RunningHubH3GroupTimeDiscount: normalizeJsonString(
+          values.RunningHubH3GroupTimeDiscount
+        ),
         AutoGroups: normalizeJsonString(values.AutoGroups),
         MaxTokenAutoGroups: values.MaxTokenAutoGroups,
         DefaultUseAutoGroup: values.DefaultUseAutoGroup,
@@ -423,7 +444,14 @@ export function RatioSettingsCard({
 
       for (const key of updates) {
         const apiKey = apiKeyMap[key] || key
-        await updateOption.mutateAsync({ key: apiKey, value: normalized[key] })
+        const result = await updateOption.mutateAsync({
+          key: apiKey,
+          value: normalized[key],
+        })
+        // The settings API reports validation errors with success:false and an
+        // HTTP 200 response. Do not advance the local saved snapshot in that
+        // case, otherwise the form incorrectly treats a rejected change as saved.
+        if (!result.success) return
       }
 
       if (updates.includes('RunningHubH3GroupPrice')) {

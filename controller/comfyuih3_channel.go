@@ -62,6 +62,9 @@ func validateComfyUIH3ChannelWorkers(ctx context.Context, channel *model.Channel
 		return fmt.Errorf("ComfyUI H3 channel is empty")
 	}
 	settings := channel.GetOtherSettings()
+	if gatewayURL := strings.TrimRight(strings.TrimSpace(settings.ComfyUIH3GatewayURL), "/"); gatewayURL != "" {
+		return validateComfyUIH3Gateway(ctx, channel, gatewayURL)
+	}
 	workerURLs := make([]string, 0, len(settings.ComfyUIH3BackendURLs)+1)
 	seen := make(map[string]struct{}, len(settings.ComfyUIH3BackendURLs)+1)
 	appendWorker := func(rawURL string) {
@@ -93,6 +96,63 @@ func validateComfyUIH3ChannelWorkers(ctx context.Context, channel *model.Channel
 		return fmt.Errorf("ComfyUI H3 worker validation failed: %s", strings.Join(failures, "; "))
 	}
 	return nil
+}
+
+func validateComfyUIH3Gateway(ctx context.Context, channel *model.Channel, gatewayURL string) error {
+	client, err := service.NewProxyHttpClient(channel.GetSetting().Proxy)
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, gatewayURL+"/api/gateway/tasks/__newapi_channel_probe__", nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Authorization", "Bearer "+channel.Key)
+	response, err := client.Do(request)
+	if err != nil {
+		return fmt.Errorf("ComfyUI H3 gateway check failed: %w", err)
+	}
+	defer response.Body.Close()
+	body, readErr := io.ReadAll(io.LimitReader(response.Body, 201))
+	if readErr != nil {
+		return readErr
+	}
+	if response.StatusCode >= 200 && response.StatusCode < 300 {
+		return nil
+	}
+	message := strings.TrimSpace(string(body))
+	if len(message) > 200 {
+		message = message[:200]
+	}
+	if response.StatusCode == http.StatusNotFound && isGatewayTaskNotFoundResponse(body) {
+		return nil
+	}
+	if response.StatusCode == http.StatusUnauthorized {
+		return fmt.Errorf("ComfyUI H3 gateway authentication failed: status 401%s", formatGatewayCheckMessage(message))
+	}
+	if message == "" {
+		message = http.StatusText(response.StatusCode)
+	}
+	return fmt.Errorf("ComfyUI H3 gateway check failed: status %d: %s", response.StatusCode, message)
+}
+
+func isGatewayTaskNotFoundResponse(body []byte) bool {
+	var payload struct {
+		Detail string `json:"detail"`
+	}
+	if err := common.Unmarshal(body, &payload); err != nil {
+		return false
+	}
+	detail := strings.ToLower(strings.TrimSpace(payload.Detail))
+	return strings.Contains(detail, "task") && strings.Contains(detail, "not found")
+}
+
+func formatGatewayCheckMessage(message string) string {
+	if message == "" {
+		return ""
+	}
+	return ": " + message
 }
 
 func validateComfyUIJSONEndpoint(ctx context.Context, client *http.Client, endpoint string, label string) error {

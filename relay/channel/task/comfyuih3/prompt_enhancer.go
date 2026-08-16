@@ -28,10 +28,16 @@ const (
 	maxEnhancerResponseBytes    = 1024 * 1024
 	maxPromptEnhancerImageBytes = 10 * 1024 * 1024
 	maxPromptEnhancerTotalBytes = 32 * 1024 * 1024
+	h3PromptEnhancerFPS         = 24
+	// Prompt enhancement is optional. Keep its synchronous wait below common
+	// downstream request deadlines so an unavailable LLM cannot block video
+	// task creation.
+	promptEnhancerDefaultMaxWait = 8 * time.Second
 )
 
 var enhanceH3Prompt = requestEnhancedH3Prompt
 var executeInternalH3PromptChat = internalchat.Execute
+var promptEnhancerMaxWait = promptEnhancerDefaultMaxWait
 
 func (a *TaskAdaptor) applyPromptEnhancement(c *gin.Context, req relaycommon.TaskSubmitReq, selector h3Selector) relaycommon.TaskSubmitReq {
 	if c != nil {
@@ -50,13 +56,16 @@ func (a *TaskAdaptor) applyPromptEnhancement(c *gin.Context, req relaycommon.Tas
 		providerReady = settings.ChannelID > 0
 	}
 	if req.ShouldEnhancePrompt() && settings.Enabled && providerReady && strings.TrimSpace(settings.Model) != "" {
-		images, err := a.promptEnhancerImages(c, req)
+		ctx := context.Background()
+		if c != nil && c.Request != nil {
+			ctx = c.Request.Context()
+		}
+		enhancementCtx, cancel := context.WithTimeout(ctx, promptEnhancerRequestTimeout(settings))
+		defer cancel()
+
+		images, err := a.promptEnhancerImages(enhancementCtx, c, req)
 		if err == nil {
-			ctx := context.Background()
-			if c != nil && c.Request != nil {
-				ctx = c.Request.Context()
-			}
-			if enhanced, enhanceErr := enhanceH3Prompt(ctx, req, selector, images, settings, service.GetHttpClient()); enhanceErr == nil && strings.TrimSpace(enhanced) != "" {
+			if enhanced, enhanceErr := enhanceH3Prompt(enhancementCtx, req, selector, images, settings, service.GetHttpClient()); enhanceErr == nil && strings.TrimSpace(enhanced) != "" {
 				finalPrompt = enhanced
 			} else if enhanceErr != nil {
 				logger.LogWarn(ctx, fmt.Sprintf("ComfyUI H3 prompt enhancement failed; using original prompt: %v", enhanceErr))
@@ -81,16 +90,15 @@ func requestEnhancedH3Prompt(
 	settings model_setting.ComfyUIH3PromptEnhancerSettings,
 	client *http.Client,
 ) (string, error) {
-	timeoutSeconds := settings.TimeoutSeconds
-	if timeoutSeconds <= 0 {
-		timeoutSeconds = 8
-	}
-	requestCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
+	requestCtx, cancel := context.WithTimeout(ctx, promptEnhancerRequestTimeout(settings))
 	defer cancel()
 
 	mode := "text-to-video"
 	if len(images) > 0 {
 		mode = "image-to-video"
+	}
+	if isFirstLastFrameMode(req.Mode) {
+		mode = "first-last-frame"
 	}
 	contextText := fmt.Sprintf(
 		"User request:\n%s\n\nTarget video duration: %d seconds\nTarget aspect ratio: %s\nTarget resolution preset: %.2f MP\nGeneration mode: %s",
@@ -102,9 +110,13 @@ func requestEnhancedH3Prompt(
 	)
 	content := []openaidto.MediaContent{{Type: openaidto.ContentTypeText, Text: contextText}}
 	if len(images) > 0 {
+		referenceDescription := fmt.Sprintf("Reference images: %d. They are provided below in <Picture N> order.", len(images))
+		if isFirstLastFrameMode(req.Mode) {
+			referenceDescription = firstLastFramePromptContext(requestSeconds(req))
+		}
 		content = append(content, openaidto.MediaContent{
 			Type: openaidto.ContentTypeText,
-			Text: fmt.Sprintf("Reference images: %d. They are provided below in <Picture N> order.", len(images)),
+			Text: referenceDescription,
 		})
 		for index, imageURL := range images {
 			if !strings.HasPrefix(strings.ToLower(imageURL), "data:image/") {
@@ -199,6 +211,33 @@ func requestEnhancedH3Prompt(
 	return enhanced, nil
 }
 
+func firstLastFramePromptContext(seconds int) string {
+	duration := float64(seconds)
+	lastFrameTime := duration - 1.0/h3PromptEnhancerFPS
+	if lastFrameTime < 0 {
+		lastFrameTime = 0
+	}
+	return fmt.Sprintf(
+		"First/last frame contract: <Picture 1> is the required first frame at 0.000 seconds. <Picture 2> is the required final rendered frame at %.3f seconds for a %.3f-second, %d FPS target. Any shot timestamp written by the enhanced prompt must remain strictly less than %.3f seconds. Treat the pictures as ordered endpoint frames, not interchangeable reference images.",
+		lastFrameTime,
+		duration,
+		h3PromptEnhancerFPS,
+		duration,
+	)
+}
+
+func promptEnhancerRequestTimeout(settings model_setting.ComfyUIH3PromptEnhancerSettings) time.Duration {
+	timeoutSeconds := settings.TimeoutSeconds
+	if timeoutSeconds <= 0 {
+		return promptEnhancerMaxWait
+	}
+	timeout := time.Duration(timeoutSeconds) * time.Second
+	if timeout > promptEnhancerMaxWait {
+		return promptEnhancerMaxWait
+	}
+	return timeout
+}
+
 func promptEnhancerEndpoint(baseURL string) (string, error) {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	parsed, err := url.Parse(baseURL)
@@ -230,7 +269,10 @@ func cleanEnhancedPrompt(prompt string) string {
 	return strings.TrimSpace(strings.Join(lines[1:len(lines)-1], "\n"))
 }
 
-func (a *TaskAdaptor) promptEnhancerImages(c *gin.Context, req relaycommon.TaskSubmitReq) ([]string, error) {
+func (a *TaskAdaptor) promptEnhancerImages(ctx context.Context, c *gin.Context, req relaycommon.TaskSubmitReq) ([]string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	sources, err := referenceInputs(c, req)
 	if err != nil {
 		return nil, err
@@ -249,6 +291,9 @@ func (a *TaskAdaptor) promptEnhancerImages(c *gin.Context, req relaycommon.TaskS
 		return nil
 	}
 	for _, value := range sources.images {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		value = strings.TrimSpace(value)
 		switch {
 		case value == "":
@@ -262,7 +307,7 @@ func (a *TaskAdaptor) promptEnhancerImages(c *gin.Context, req relaycommon.TaskS
 				return nil, err
 			}
 		case isHTTPURL(value):
-			input, err := downloadReferenceWithLimit(value, maxPromptEnhancerImageBytes)
+			input, err := downloadReferenceWithLimitContext(ctx, value, maxPromptEnhancerImageBytes)
 			if err != nil {
 				return nil, err
 			}
@@ -272,7 +317,7 @@ func (a *TaskAdaptor) promptEnhancerImages(c *gin.Context, req relaycommon.TaskS
 		default:
 			fileName := filepath.Base(value)
 			subfolder := strings.Trim(strings.TrimSuffix(value, fileName), "/\\")
-			input, err := downloadComfyInputReference(a.baseURL, fileName, subfolder, a.proxy, maxPromptEnhancerImageBytes)
+			input, err := downloadComfyInputReference(ctx, a.baseURL, fileName, subfolder, a.proxy, maxPromptEnhancerImageBytes)
 			if err != nil {
 				return nil, err
 			}
@@ -282,6 +327,9 @@ func (a *TaskAdaptor) promptEnhancerImages(c *gin.Context, req relaycommon.TaskS
 		}
 	}
 	for _, header := range sources.imageFiles {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		input, err := readMultipartFileWithLimit(header, maxPromptEnhancerImageBytes)
 		if err != nil {
 			return nil, err
@@ -352,12 +400,15 @@ func reservePromptEnhancerImageBytes(totalBytes *int64, imageBytes int64) error 
 	return nil
 }
 
-func downloadComfyInputReference(baseURL, fileName, subfolder, proxy string, maxBytes int64) (referenceInput, error) {
+func downloadComfyInputReference(ctx context.Context, baseURL, fileName, subfolder, proxy string, maxBytes int64) (referenceInput, error) {
 	requestURL := buildViewURL(baseURL, fileName, subfolder, "input")
 	if requestURL == "" {
 		return referenceInput{}, fmt.Errorf("invalid ComfyUI reference file name")
 	}
-	req, err := http.NewRequest(http.MethodGet, requestURL, nil)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return referenceInput{}, err
 	}

@@ -22,6 +22,19 @@ func Marshal(v any) ([]byte, error) {
 	return json.Marshal(v)
 }
 
+// MarshalNoHTMLEscape preserves URL query separators in JSON output. Use it
+// only for API responses where callers may copy a URL directly from raw JSON.
+func MarshalNoHTMLEscape(v any) ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(v); err != nil {
+		return nil, err
+	}
+	data := buffer.Bytes()
+	return data[:len(data)-1], nil
+}
+
 func GetJsonType(data json.RawMessage) string {
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 {

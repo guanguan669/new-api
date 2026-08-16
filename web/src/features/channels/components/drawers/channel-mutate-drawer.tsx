@@ -313,6 +313,7 @@ const SENSITIVE_FORM_FIELDS = [
   'runninghub_workflow_id',
   'runninghub_text_workflow_id',
   'comfyui_h3_backend_urls',
+  'comfyui_h3_gateway_url',
   'force_format',
   'thinking_to_content',
   'proxy',
@@ -756,6 +757,7 @@ export function ChannelMutateDrawer({
   const currentBaseUrl = form.watch('base_url')
   const currentKey = form.watch('key')
   const currentOther = form.watch('other')
+  const currentComfyUIH3GatewayUrl = form.watch('comfyui_h3_gateway_url')
   const currentModels = form.watch('models')
   const currentName = form.watch('name')
   const currentModelMapping = form.watch('model_mapping')
@@ -996,7 +998,8 @@ export function ChannelMutateDrawer({
     formErrors.azure_responses_version ||
     formErrors.runninghub_workflow_id ||
     formErrors.runninghub_text_workflow_id ||
-    formErrors.comfyui_h3_backend_urls
+    formErrors.comfyui_h3_backend_urls ||
+    formErrors.comfyui_h3_gateway_url
   )
   const modelsHaveErrors = Boolean(
     formErrors.models || formErrors.group || formErrors.model_mapping
@@ -1006,6 +1009,9 @@ export function ChannelMutateDrawer({
   const providerRequiresBaseUrl = [3, 8, 36, 45].includes(currentType)
   const providerRequiresOther = [3, 18, 21, 39, 41, 49].includes(currentType)
   const providerRequiresWorkflowId = currentType === CHANNEL_TYPE_RUNNINGHUB
+  const usesComfyUIH3Gateway =
+    currentType === CHANNEL_TYPE_COMFYUI_H3 &&
+    Boolean(currentComfyUIH3GatewayUrl?.trim())
   const identityComplete = Boolean(currentName?.trim() && currentType > 0)
   const credentialsComplete = Boolean(
     (isEditing || currentKey?.trim()) &&
@@ -2494,32 +2500,61 @@ export function ChannelMutateDrawer({
                             )}
 
                             {currentType === CHANNEL_TYPE_COMFYUI_H3 && (
-                              <FormField
-                                control={form.control}
-                                name='comfyui_h3_backend_urls'
-                                render={({ field }) => (
-                                  <FormItem>
-                                    <FormLabel>
-                                      {t('Internal ComfyUI worker URLs')}
-                                    </FormLabel>
-                                    <FormControl>
-                                      <Textarea
-                                        rows={4}
-                                        placeholder={t(
-                                          'Enter one ComfyUI worker base URL per line'
+                              <>
+                                <FormField
+                                  control={form.control}
+                                  name='comfyui_h3_gateway_url'
+                                  render={({ field }) => (
+                                    <FormItem>
+                                      <FormLabel>
+                                        {t('H3 central gateway URL (optional)')}
+                                      </FormLabel>
+                                      <FormControl>
+                                        <Input
+                                          placeholder={t(
+                                            'e.g., https://h3-gateway.example.com'
+                                          )}
+                                          {...field}
+                                        />
+                                      </FormControl>
+                                      <FormDescription>
+                                        {t(
+                                          'When set, this H3 channel uses the central queue instead of connecting directly to workers.'
                                         )}
-                                        {...field}
-                                      />
-                                    </FormControl>
-                                    <FormDescription>
-                                      {t(
-                                        'Requests are distributed across these workers. Base URL remains the fallback.'
-                                      )}
-                                    </FormDescription>
-                                    <FormMessage />
-                                  </FormItem>
+                                      </FormDescription>
+                                      <FormMessage />
+                                    </FormItem>
+                                  )}
+                                />
+                                {!usesComfyUIH3Gateway && (
+                                  <FormField
+                                    control={form.control}
+                                    name='comfyui_h3_backend_urls'
+                                    render={({ field }) => (
+                                      <FormItem>
+                                        <FormLabel>
+                                          {t('Internal ComfyUI worker URLs')}
+                                        </FormLabel>
+                                        <FormControl>
+                                          <Textarea
+                                            rows={4}
+                                            placeholder={t(
+                                              'Enter one ComfyUI worker base URL per line'
+                                            )}
+                                            {...field}
+                                          />
+                                        </FormControl>
+                                        <FormDescription>
+                                          {t(
+                                            'Requests are distributed across these workers. Base URL remains the fallback.'
+                                          )}
+                                        </FormDescription>
+                                        <FormMessage />
+                                      </FormItem>
+                                    )}
+                                  />
                                 )}
-                              />
+                              </>
                             )}
 
                             {/* AI Proxy Library (type 21) */}
@@ -2938,31 +2973,32 @@ export function ChannelMutateDrawer({
                             )}
 
                             {/* General base_url for other types */}
-                            {![3, 8, 22, 36, 45].includes(currentType) && (
-                              <FormField
-                                control={form.control}
-                                name='base_url'
-                                render={({ field }) => (
-                                  <FormItem>
-                                    <FormLabel>{t('Base URL')}</FormLabel>
-                                    <FormControl>
-                                      <Input
-                                        placeholder={t(
-                                          FIELD_PLACEHOLDERS.BASE_URL
+                            {![3, 8, 22, 36, 45].includes(currentType) &&
+                              !usesComfyUIH3Gateway && (
+                                <FormField
+                                  control={form.control}
+                                  name='base_url'
+                                  render={({ field }) => (
+                                    <FormItem>
+                                      <FormLabel>{t('Base URL')}</FormLabel>
+                                      <FormControl>
+                                        <Input
+                                          placeholder={t(
+                                            FIELD_PLACEHOLDERS.BASE_URL
+                                          )}
+                                          {...field}
+                                        />
+                                      </FormControl>
+                                      <FormDescription>
+                                        {t(
+                                          'Custom API base URL. For official channels, New API has built-in addresses. Only fill this for third-party proxy sites or special endpoints. Do not add /v1 or trailing slash.'
                                         )}
-                                        {...field}
-                                      />
-                                    </FormControl>
-                                    <FormDescription>
-                                      {t(
-                                        'Custom API base URL. For official channels, New API has built-in addresses. Only fill this for third-party proxy sites or special endpoints. Do not add /v1 or trailing slash.'
-                                      )}
-                                    </FormDescription>
-                                    <FormMessage />
-                                  </FormItem>
-                                )}
-                              />
-                            )}
+                                      </FormDescription>
+                                      <FormMessage />
+                                    </FormItem>
+                                  )}
+                                />
+                              )}
 
                             {currentType === CHANNEL_TYPE_ADVANCED_CUSTOM && (
                               <FormField

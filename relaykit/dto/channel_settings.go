@@ -79,7 +79,11 @@ type ChannelOtherSettings struct {
 	DisableTaskPollingSleep bool          `json:"disable_task_polling_sleep,omitempty"` // 是否跳过异步任务轮询间隔
 	// ComfyUIH3BackendURLs configures equivalent GPU-bound ComfyUI workers for
 	// one self-hosted H3 channel. It is deliberately not a channel list.
-	ComfyUIH3BackendURLs                  []string              `json:"comfyui_h3_backend_urls,omitempty"`
+	ComfyUIH3BackendURLs []string `json:"comfyui_h3_backend_urls,omitempty"`
+	// ComfyUIH3GatewayURL switches the H3 channel to the authenticated central
+	// queue gateway. When set, direct worker URLs remain stored for fallback but
+	// are not used for submission or polling.
+	ComfyUIH3GatewayURL                   string                `json:"comfyui_h3_gateway_url,omitempty"`
 	RunningHubWorkflowID                  string                `json:"runninghub_workflow_id,omitempty"` // Image-to-video workflow ID (legacy key retained for existing channels)
 	RunningHubTextWorkflowID              string                `json:"runninghub_text_workflow_id,omitempty"`
 	AwsKeyType                            AwsKeyType            `json:"aws_key_type,omitempty"`

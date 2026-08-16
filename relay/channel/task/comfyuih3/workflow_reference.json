@@ -1,0 +1,351 @@
+{
+  "167": {
+    "inputs": {
+      "prompt": [
+        "209",
+        0
+      ],
+      "width": [
+        "205",
+        0
+      ],
+      "height": [
+        "205",
+        1
+      ],
+      "length": [
+        "205",
+        2
+      ],
+      "ref_image_size": "match",
+      "clip": [
+        "202",
+        0
+      ],
+      "vae": [
+        "203",
+        0
+      ],
+      "audio_vae": [
+        "204",
+        0
+      ],
+      "ref_images.ref_image_0": [
+        "195",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3ReferenceToVideo",
+    "_meta": {
+      "title": "MiniMax H3 Reference to Video"
+    }
+  },
+  "182": {
+    "inputs": {
+      "noise_seed": 368837702569222
+    },
+    "class_type": "RandomNoise",
+    "_meta": {
+      "title": "随机噪波"
+    }
+  },
+  "183": {
+    "inputs": {
+      "model": [
+        "227",
+        0
+      ],
+      "conditioning": [
+        "167",
+        0
+      ]
+    },
+    "class_type": "BasicGuider",
+    "_meta": {
+      "title": "基本引导器"
+    }
+  },
+  "184": {
+    "inputs": {
+      "sampler_name": "euler"
+    },
+    "class_type": "KSamplerSelect",
+    "_meta": {
+      "title": "K采样器选择"
+    }
+  },
+  "185": {
+    "inputs": {
+      "scheduler": "beta",
+      "steps": 8,
+      "denoise": 1,
+      "model": [
+        "227",
+        0
+      ]
+    },
+    "class_type": "BasicScheduler",
+    "_meta": {
+      "title": "基本调度器"
+    }
+  },
+  "188": {
+    "inputs": {
+      "noise": [
+        "182",
+        0
+      ],
+      "guider": [
+        "183",
+        0
+      ],
+      "sampler": [
+        "184",
+        0
+      ],
+      "sigmas": [
+        "185",
+        0
+      ],
+      "latent_image": [
+        "167",
+        1
+      ]
+    },
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {
+      "title": "自定义采样器（高级）"
+    }
+  },
+  "189": {
+    "inputs": {
+      "cleanup": "不做任何清理",
+      "samples": [
+        "188",
+        0
+      ],
+      "vae": [
+        "203",
+        0
+      ]
+    },
+    "class_type": "XB_VAEDecode",
+    "_meta": {
+      "title": "XB-BOX - VAE解码（原版优化）"
+    }
+  },
+  "190": {
+    "inputs": {
+      "samples": [
+        "188",
+        0
+      ],
+      "vae": [
+        "204",
+        0
+      ]
+    },
+    "class_type": "VAEDecodeAudio",
+    "_meta": {
+      "title": "VAE解码（音频）"
+    }
+  },
+  "191": {
+    "inputs": {
+      "mode": "always",
+      "volume": 1,
+      "file": "notify.mp3",
+      "any": [
+        "189",
+        0
+      ]
+    },
+    "class_type": "PlaySound|pysssss",
+    "_meta": {
+      "title": "提示音📢"
+    }
+  },
+  "193": {
+    "inputs": {
+      "unet_name": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "UNet加载器"
+    }
+  },
+  "195": {
+    "inputs": {
+      "image": "6c5700c891224496a88fb7ccb8ae14af_original.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "加载图像"
+    }
+  },
+  "198": {
+    "inputs": {},
+    "class_type": "XB_CanvasLabel",
+    "_meta": {
+      "title": "更多教程全网搜：机智罗_LX"
+    }
+  },
+  "202": {
+    "inputs": {
+      "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "type": "minimax",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "加载CLIP"
+    }
+  },
+  "203": {
+    "inputs": {
+      "vae_name": "minimax_h3_video_vae_fp16.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "加载VAE"
+    }
+  },
+  "204": {
+    "inputs": {
+      "vae_name": "minimax_h3_audio_vae_fp32.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "加载VAE"
+    }
+  },
+  "205": {
+    "inputs": {
+      "aspect_ratio": "9:16 (Portrait Widescreen)",
+      "megapixels": 2,
+      "multiple": 32,
+      "frames_display": "1088 × 1920  |  估算帧数: 362",
+      "duration": 15,
+      "fps": 24,
+      "fps_float": 24
+    },
+    "class_type": "XB_HailuoH3VideoParams",
+    "_meta": {
+      "title": "XB-BOX - 🌊 海螺H3视频参数"
+    }
+  },
+  "209": {
+    "inputs": {
+      "value": "0–3秒：卧室自然晨光中，模特站在落地镜前自拍，镜头从上半身缓慢向下推进，呈现奶油黄色吊带长裙与黑色爱心印花。\n3–6秒：模特轻轻转身，裙摆随动作自然摆动，展示修身长款版型、细肩带和整体垂坠感；动作自然从容，不夸张。\n6–9秒：镜头切换至中近景，模特轻抚裙身并微笑看向镜头，展示黑色爱心图案分布与面料的自然光泽。\n9–12秒：模特从镜子前走向窗边，手持小包或手机，展现日常约会、咖啡出行、室内休闲穿搭氛围；保持服装版型和图案稳定。\n12–15秒：模特回到镜前，轻轻侧身并转半圈，最后定格在完整穿搭画面，画面简洁干净，突出连衣裙的整体效果。"
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "字符串（多行）"
+    }
+  },
+  "210": {
+    "inputs": {
+      "frame_rate": 24,
+      "loop_count": 0,
+      "filename_prefix": "视频/MiniMax-H3/2026-08-16/MiniMax-H3视频",
+      "format": "video/h264-mp4",
+      "pix_fmt": "yuv420p",
+      "crf": 19,
+      "save_metadata": true,
+      "trim_to_audio": false,
+      "pingpong": false,
+      "save_output": true,
+      "images": [
+        "189",
+        0
+      ],
+      "audio": [
+        "190",
+        0
+      ]
+    },
+    "class_type": "VHS_VideoCombine",
+    "_meta": {
+      "title": "Video Combine 🎥🅥🅗🅢"
+    }
+  },
+  "211": {
+    "inputs": {},
+    "class_type": "XB_CanvasLabel",
+    "_meta": {
+      "title": "MiniMax-H3 图片/视频/音频多参生视频 切换工作流"
+    }
+  },
+  "220": {
+    "inputs": {
+      "lora_name": "minimax_h3_fl2v_lightx2v_turbo_4step_v0.1_comfy.safetensors",
+      "strength_model": 0.6,
+      "model": [
+        "193",
+        0
+      ]
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "LoRA加载器（仅模型）"
+    }
+  },
+  "226": {
+    "inputs": {
+      "processing_control_value": 0.12,
+      "processing_percent_1": 0.1,
+      "processing_percent_2": 0.9,
+      "mcs": 2,
+      "device": "cpu",
+      "model": [
+        "220",
+        0
+      ]
+    },
+    "class_type": "TESpeedMiniMaxH3",
+    "_meta": {
+      "title": "TE-Speed-MiniMaxH3"
+    }
+  },
+  "227": {
+    "inputs": {
+      "profile": "2MP low VRAM",
+      "sage_attention": "sageattn3",
+      "mlp_chunk_size": 8192,
+      "attention_heads_per_chunk": 2,
+      "model": [
+        "228",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3MemoryProfile",
+    "_meta": {
+      "title": "MiniMax H3 Memory Profile"
+    }
+  },
+  "228": {
+    "inputs": {
+      "tau": 1.3,
+      "start_percent": 0.2,
+      "end_percent": 0.9,
+      "min_tokens": 4096,
+      "int8_qk": true,
+      "sink_conditioning": "exact_kv",
+      "morton": false,
+      "morton_curve": "2d_frame",
+      "int8_pv": true,
+      "verbose": false,
+      "use_tma": false,
+      "dense_blocks": "0-5",
+      "model": [
+        "226",
+        0
+      ]
+    },
+    "class_type": "SolAttnPatch",
+    "_meta": {
+      "title": "Patch Sol-Attn"
+    }
+  }
+}

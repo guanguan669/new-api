@@ -146,7 +146,14 @@ func taskBillingContextPriceData(bc *model.TaskBillingContext) *types.PriceData 
 		return nil
 	}
 	priceData := &types.PriceData{}
-	if !priceData.ReplaceOtherRatios(bc.OtherRatios) {
+	for key, ratio := range bc.OtherRatios {
+		if key == "h3_time_discount" && ratio == 0 {
+			priceData.AddOtherRatioAllowZero(key, ratio)
+			continue
+		}
+		priceData.AddOtherRatio(key, ratio)
+	}
+	if len(priceData.OtherRatios()) == 0 {
 		return nil
 	}
 	return priceData

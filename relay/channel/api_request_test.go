@@ -1,6 +1,8 @@
 package channel
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -9,6 +11,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestIsUpstreamTransportError(t *testing.T) {
+	transport := &upstreamTransportError{err: errors.New("connection reset")}
+	require.True(t, IsUpstreamTransportError(fmt.Errorf("do request failed: %w", transport)))
+	require.False(t, IsUpstreamTransportError(fmt.Errorf("do request failed: %w", errors.New("new proxy http client failed"))))
+}
 
 func TestProcessHeaderOverride_ChannelTestSkipsPassthroughRules(t *testing.T) {
 	t.Parallel()

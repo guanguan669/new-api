@@ -53,6 +53,8 @@ import type {
 } from '../types'
 import { CreemProductsSection } from './creem-products-section'
 
+const ONLINE_TOPUP_LINK = 'https://pay.ldxp.cn/shop/8XAPR1SG'
+
 interface RechargeFormCardProps {
   topupInfo: TopupInfo | null
   presetAmounts: PresetAmount[]
@@ -98,7 +100,6 @@ export function RechargeFormCard({
   onRedemptionCodeChange,
   onRedeem,
   redeeming,
-  topupLink,
   loading,
   priceRatio = 1,
   usdExchangeRate = 1,
@@ -135,7 +136,8 @@ export function RechargeFormCard({
     topupInfo?.enable_stripe_topup ||
     enableWaffoTopup ||
     enableWaffoPancakeTopup
-  const hasAnyTopup = hasConfigurableTopup || enableCreemTopup
+  const hasAnyTopup =
+    hasConfigurableTopup || enableCreemTopup || Boolean(ONLINE_TOPUP_LINK)
   const hasStandardPaymentMethods =
     Array.isArray(topupInfo?.pay_methods) && topupInfo.pay_methods.length > 0
   const hasWaffoPaymentMethods =
@@ -219,6 +221,20 @@ export function RechargeFormCard({
       {/* Online Topup Section */}
       {hasAnyTopup ? (
         <div className='space-y-4 sm:space-y-6'>
+          <div className='flex items-center gap-2'>
+            <a
+              href={ONLINE_TOPUP_LINK}
+              target='_blank'
+              rel='noopener noreferrer'
+              className='inline-flex animate-pulse items-center gap-1 text-base font-semibold text-red-500 underline-offset-4 hover:underline motion-reduce:animate-none'
+            >
+              {t('Recharge')}
+              <ExternalLink className='h-3.5 w-3.5' />
+            </a>
+            <span className='text-muted-foreground text-sm whitespace-nowrap'>
+              点击左侧链接充值
+            </span>
+          </div>
           {hasConfigurableTopup && (
             <>
               {presetAmounts.length > 0 && (
@@ -535,20 +551,6 @@ export function RechargeFormCard({
               {t('Redeem')}
             </Button>
           </div>
-          {topupLink && (
-            <p className='text-muted-foreground text-xs'>
-              {t('Need a redemption code?')}{' '}
-              <a
-                href={topupLink}
-                target='_blank'
-                rel='noopener noreferrer'
-                className='inline-flex items-center gap-1 underline-offset-4 hover:underline'
-              >
-                {t('Get one here')}
-                <ExternalLink className='h-3 w-3' />
-              </a>
-            </p>
-          )}
         </div>
       ) : (
         <Alert className='border-t'>

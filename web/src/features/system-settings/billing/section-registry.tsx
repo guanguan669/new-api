@@ -46,6 +46,7 @@ const getGroupDefaults = (settings: BillingSettings) => ({
   UserUsableGroups: settings.UserUsableGroups,
   GroupGroupRatio: settings.GroupGroupRatio,
   RunningHubH3GroupPrice: settings.RunningHubH3GroupPrice,
+  RunningHubH3GroupTimeDiscount: settings.RunningHubH3GroupTimeDiscount,
   AutoGroups: settings.AutoGroups,
   MaxTokenAutoGroups: settings.MaxTokenAutoGroups,
   DefaultUseAutoGroup: settings.DefaultUseAutoGroup,

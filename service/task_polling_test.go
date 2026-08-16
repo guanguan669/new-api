@@ -23,11 +23,17 @@ import (
 type taskPollingFetchAdaptor struct {
 	mu           sync.Mutex
 	taskIDs      []string
+	baseURLs     []string
+	keys         []string
+	initInfo     *relaycommon.RelayInfo
+	initInfos    []*relaycommon.RelayInfo
 	fetched      chan string
 	blockTaskID  string
 	blockStarted chan struct{}
 	releaseBlock chan struct{}
 	blockOnce    sync.Once
+	statusCode   int
+	responseBody []byte
 }
 
 type sunoFailurePollingAdaptor struct {
@@ -69,9 +75,14 @@ func (a *sunoFailurePollingAdaptor) AdjustBillingOnComplete(_ *model.Task, _ *re
 	return 0
 }
 
-func (a *taskPollingFetchAdaptor) Init(_ *relaycommon.RelayInfo) {}
+func (a *taskPollingFetchAdaptor) Init(info *relaycommon.RelayInfo) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.initInfo = info
+	a.initInfos = append(a.initInfos, info)
+}
 
-func (a *taskPollingFetchAdaptor) FetchTask(_ string, _ string, body map[string]any, _ string) (*http.Response, error) {
+func (a *taskPollingFetchAdaptor) FetchTask(baseURL string, key string, body map[string]any, _ string) (*http.Response, error) {
 	taskID, _ := body["task_id"].(string)
 	if taskID == a.blockTaskID && a.releaseBlock != nil {
 		a.blockOnce.Do(func() {
@@ -84,6 +95,8 @@ func (a *taskPollingFetchAdaptor) FetchTask(_ string, _ string, body map[string]
 
 	a.mu.Lock()
 	a.taskIDs = append(a.taskIDs, taskID)
+	a.baseURLs = append(a.baseURLs, baseURL)
+	a.keys = append(a.keys, key)
 	a.mu.Unlock()
 	if a.fetched != nil {
 		select {
@@ -92,22 +105,202 @@ func (a *taskPollingFetchAdaptor) FetchTask(_ string, _ string, body map[string]
 		}
 	}
 
-	response := taskdto.TaskResponse[model.Task]{
-		Code: taskdto.TaskSuccessCode,
-		Data: model.Task{
-			TaskID:   taskID,
-			Status:   model.TaskStatusInProgress,
-			Progress: "30%",
-		},
+	responseBody := a.responseBody
+	if responseBody == nil {
+		response := taskdto.TaskResponse[model.Task]{
+			Code: taskdto.TaskSuccessCode,
+			Data: model.Task{
+				TaskID:   taskID,
+				Status:   model.TaskStatusInProgress,
+				Progress: "30%",
+			},
+		}
+		var err error
+		responseBody, err = common.Marshal(response)
+		if err != nil {
+			return nil, err
+		}
 	}
-	responseBody, err := common.Marshal(response)
-	if err != nil {
-		return nil, err
+	statusCode := a.statusCode
+	if statusCode == 0 {
+		statusCode = http.StatusOK
 	}
 	return &http.Response{
-		StatusCode: http.StatusOK,
+		StatusCode: statusCode,
 		Body:       io.NopCloser(bytes.NewReader(responseBody)),
 	}, nil
+}
+
+func TestUpdateVideoTasksUsesComfyUIH3GatewaySettings(t *testing.T) {
+	truncate(t)
+
+	const channelID = 303
+	baseURL := "http://direct-worker.invalid:5900"
+	channel := &model.Channel{
+		Id: channelID, Type: constant.ChannelTypeComfyUIH3, Name: "h3_gateway",
+		Key: "gateway-secret", BaseURL: &baseURL, Status: common.ChannelStatusEnabled,
+	}
+	channel.SetOtherSettings(dto.ChannelOtherSettings{
+		ComfyUIH3GatewayURL:     "http://gateway.internal:8090",
+		ComfyUIH3BackendURLs:    []string{"http://worker.internal:5900"},
+		DisableTaskPollingSleep: true,
+	})
+	require.NoError(t, model.DB.Create(channel).Error)
+	task := seedPollingTask(t, channelID, "task_gateway_public", "gateway_upstream_id")
+	task.Platform = constant.TaskPlatform("comfyuih3")
+	task.PrivateData.ComfyUIH3Gateway = true
+	task.PrivateData.UpstreamBaseURL = "http://gateway.internal:8090"
+	require.NoError(t, model.DB.Save(task).Error)
+
+	adaptor := &taskPollingFetchAdaptor{}
+	previousFactory := GetTaskAdaptorFunc
+	GetTaskAdaptorFunc = func(constant.TaskPlatform) TaskPollingAdaptor { return adaptor }
+	t.Cleanup(func() { GetTaskAdaptorFunc = previousFactory })
+
+	require.NoError(t, UpdateVideoTasks(context.Background(), task.Platform, map[int][]string{
+		channelID: {task.GetUpstreamTaskID()},
+	}, map[string]*model.Task{task.GetUpstreamTaskID(): task}))
+
+	adaptor.mu.Lock()
+	defer adaptor.mu.Unlock()
+	require.NotNil(t, adaptor.initInfo)
+	require.Equal(t, constant.ChannelTypeComfyUIH3, adaptor.initInfo.ChannelMeta.ChannelType)
+	require.Equal(t, "http://gateway.internal:8090", adaptor.initInfo.ChannelMeta.ChannelOtherSettings.ComfyUIH3GatewayURL)
+	require.Equal(t, []string{"http://gateway.internal:8090"}, adaptor.baseURLs)
+	require.Equal(t, []string{"gateway-secret"}, adaptor.keys)
+}
+
+func TestUpdateVideoTasksKeepsHistoricalComfyUIH3TaskOnDirectWorker(t *testing.T) {
+	truncate(t)
+
+	const channelID = 304
+	baseURL := "http://gateway.internal:8090"
+	channel := &model.Channel{
+		Id: channelID, Type: constant.ChannelTypeComfyUIH3, Name: "h3_gateway",
+		Key: "gateway-secret", BaseURL: &baseURL, Status: common.ChannelStatusEnabled,
+	}
+	channel.SetOtherSettings(dto.ChannelOtherSettings{
+		ComfyUIH3GatewayURL:     "http://gateway.internal:8090",
+		ComfyUIH3BackendURLs:    []string{"http://worker.internal:5900"},
+		DisableTaskPollingSleep: true,
+	})
+	require.NoError(t, model.DB.Create(channel).Error)
+	task := seedPollingTask(t, channelID, "task_direct_public", "direct_upstream_id")
+	task.Platform = constant.TaskPlatform("comfyuih3")
+	task.PrivateData.UpstreamBaseURL = "http://worker.internal:5900"
+	require.NoError(t, model.DB.Save(task).Error)
+
+	adaptor := &taskPollingFetchAdaptor{}
+	previousFactory := GetTaskAdaptorFunc
+	GetTaskAdaptorFunc = func(constant.TaskPlatform) TaskPollingAdaptor { return adaptor }
+	t.Cleanup(func() { GetTaskAdaptorFunc = previousFactory })
+
+	require.NoError(t, UpdateVideoTasks(context.Background(), task.Platform, map[int][]string{
+		channelID: {task.GetUpstreamTaskID()},
+	}, map[string]*model.Task{task.GetUpstreamTaskID(): task}))
+
+	adaptor.mu.Lock()
+	defer adaptor.mu.Unlock()
+	require.Equal(t, []string{"http://worker.internal:5900"}, adaptor.baseURLs)
+	require.NotEmpty(t, adaptor.initInfos)
+	require.Empty(t, adaptor.initInfos[len(adaptor.initInfos)-1].ChannelMeta.ChannelOtherSettings.ComfyUIH3GatewayURL)
+}
+
+func TestUpdateVideoSingleTaskKeepsComfyUIH3GatewayTaskOnAuthenticationError(t *testing.T) {
+	truncate(t)
+
+	const channelID = 305
+	baseURL := "http://direct-worker.invalid:5900"
+	channel := &model.Channel{
+		Id: channelID, Type: constant.ChannelTypeComfyUIH3, Name: "h3_gateway",
+		Key: "rotated-gateway-secret", BaseURL: &baseURL, Status: common.ChannelStatusEnabled,
+	}
+	channel.SetOtherSettings(dto.ChannelOtherSettings{
+		ComfyUIH3GatewayURL:     "http://gateway.internal:8090",
+		DisableTaskPollingSleep: true,
+	})
+	require.NoError(t, model.DB.Create(channel).Error)
+	task := seedPollingTask(t, channelID, "task_gateway_unauthorized", "gateway_upstream_unauthorized")
+	task.Platform = constant.TaskPlatform("comfyuih3")
+	task.PrivateData.ComfyUIH3Gateway = true
+	task.PrivateData.UpstreamBaseURL = "http://gateway.internal:8090"
+	task.PrivateData.Key = "stale-gateway-secret"
+	require.NoError(t, model.DB.Save(task).Error)
+
+	adaptor := &taskPollingFetchAdaptor{statusCode: http.StatusUnauthorized, responseBody: []byte(`{"detail":"invalid gateway token"}`)}
+	err := updateVideoSingleTask(context.Background(), adaptor, channel, task.GetUpstreamTaskID(), map[string]*model.Task{task.GetUpstreamTaskID(): task})
+	require.ErrorContains(t, err, "transient status 401")
+	require.Equal(t, model.TaskStatus(model.TaskStatusInProgress), task.Status)
+	require.Equal(t, []string{"rotated-gateway-secret"}, adaptor.keys)
+}
+
+func TestComfyUIH3GatewayPollAuthenticationStatusesAreTransient(t *testing.T) {
+	require.False(t, isPermanentComfyUIH3GatewayPollStatus(http.StatusUnauthorized))
+	require.False(t, isPermanentComfyUIH3GatewayPollStatus(http.StatusForbidden))
+	require.False(t, isPermanentComfyUIH3GatewayPollStatus(http.StatusRequestTimeout))
+	require.False(t, isPermanentComfyUIH3GatewayPollStatus(http.StatusTooEarly))
+	require.False(t, isPermanentComfyUIH3GatewayPollStatus(http.StatusTooManyRequests))
+	require.False(t, isPermanentComfyUIH3GatewayPollStatus(http.StatusServiceUnavailable))
+	require.True(t, isPermanentComfyUIH3GatewayPollStatus(http.StatusBadRequest))
+	require.True(t, isPermanentComfyUIH3GatewayPollStatus(http.StatusNotFound))
+	require.True(t, isPermanentComfyUIH3GatewayPollStatus(http.StatusGone))
+	require.True(t, isPermanentComfyUIH3GatewayPollStatus(http.StatusUnprocessableEntity))
+}
+
+func TestComfyUIH3GatewayPollFailureReasonDoesNotExposeResponseBody(t *testing.T) {
+	reason := comfyUIH3GatewayPollFailureReason(http.StatusNotFound)
+	require.Equal(t, "ComfyUI H3 gateway task not found (status 404)", reason)
+	require.NotContains(t, reason, "/internal/path")
+}
+
+func TestUpdateVideoSingleTaskDoesNotStorePermanentGatewayErrorBody(t *testing.T) {
+	truncate(t)
+
+	const channelID = 307
+	baseURL := "http://direct-worker.invalid:5900"
+	channel := &model.Channel{Id: channelID, Type: constant.ChannelTypeComfyUIH3, Name: "h3_gateway", Key: "gateway-secret", BaseURL: &baseURL, Status: common.ChannelStatusEnabled}
+	channel.SetOtherSettings(dto.ChannelOtherSettings{ComfyUIH3GatewayURL: "http://gateway.internal:8090"})
+	require.NoError(t, model.DB.Create(channel).Error)
+	task := seedPollingTask(t, channelID, "task_gateway_not_found", "gateway_upstream_not_found")
+	task.Platform = constant.TaskPlatform("comfyuih3")
+	task.PrivateData.ComfyUIH3Gateway = true
+	task.PrivateData.UpstreamBaseURL = "http://gateway.internal:8090"
+	require.NoError(t, model.DB.Save(task).Error)
+
+	responseBody := []byte(`{"detail":"secret at /internal/path","view_endpoint":"http://127.0.0.1:5901/view"}`)
+	adaptor := &taskPollingFetchAdaptor{statusCode: http.StatusNotFound, responseBody: responseBody}
+	err := updateVideoSingleTask(context.Background(), adaptor, channel, task.GetUpstreamTaskID(), map[string]*model.Task{task.GetUpstreamTaskID(): task})
+	require.NoError(t, err)
+	require.Equal(t, model.TaskStatus(model.TaskStatusFailure), task.Status)
+	require.Equal(t, "ComfyUI H3 gateway task not found (status 404)", task.FailReason)
+	require.NotContains(t, string(task.Data), "secret")
+	require.NotContains(t, string(task.Data), "internal/path")
+	require.NotContains(t, string(task.Data), "view_endpoint")
+
+	var publicData map[string]any
+	require.NoError(t, common.Unmarshal(task.Data, &publicData))
+	require.Equal(t, "gateway_task_query_rejected", publicData["error"])
+	require.Equal(t, float64(http.StatusNotFound), publicData["status_code"])
+}
+
+func TestUpdateVideoSingleTaskKeepsComfyUIH3GatewayTaskForTransientPollError(t *testing.T) {
+	truncate(t)
+
+	const channelID = 306
+	baseURL := "http://direct-worker.invalid:5900"
+	channel := &model.Channel{Id: channelID, Type: constant.ChannelTypeComfyUIH3, Name: "h3_gateway", Key: "gateway-secret", BaseURL: &baseURL, Status: common.ChannelStatusEnabled}
+	channel.SetOtherSettings(dto.ChannelOtherSettings{ComfyUIH3GatewayURL: "http://gateway.internal:8090"})
+	require.NoError(t, model.DB.Create(channel).Error)
+	task := seedPollingTask(t, channelID, "task_gateway_transient", "gateway_upstream_transient")
+	task.Platform = constant.TaskPlatform("comfyuih3")
+	task.PrivateData.ComfyUIH3Gateway = true
+	task.PrivateData.UpstreamBaseURL = "http://gateway.internal:8090"
+	require.NoError(t, model.DB.Save(task).Error)
+
+	adaptor := &taskPollingFetchAdaptor{statusCode: http.StatusServiceUnavailable, responseBody: []byte(`{"detail":"temporarily unavailable"}`)}
+	err := updateVideoSingleTask(context.Background(), adaptor, channel, task.GetUpstreamTaskID(), map[string]*model.Task{task.GetUpstreamTaskID(): task})
+	require.ErrorContains(t, err, "transient status 503")
+	require.Equal(t, model.TaskStatus(model.TaskStatusInProgress), task.Status)
 }
 
 func (a *taskPollingFetchAdaptor) ParseTaskResult([]byte) (*relaycommon.TaskInfo, error) {

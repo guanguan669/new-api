@@ -107,6 +107,9 @@ type TaskPrivateData struct {
 	ResultURL      string `json:"result_url,omitempty"`       // 任务成功后的结果 URL（视频地址等）
 	OutputSeconds  int    `json:"output_seconds,omitempty"`
 	OutputSize     string `json:"output_size,omitempty"`
+	// ComfyUIH3Gateway freezes the transport selected when an H3 task is
+	// submitted. Historical tasks omit it and remain on the direct-worker path.
+	ComfyUIH3Gateway bool `json:"comfyui_h3_gateway,omitempty"`
 	// UpstreamBaseURL pins a self-hosted H3 task to its selected internal GPU
 	// worker for polling and result retrieval. Existing tasks leave it empty.
 	UpstreamBaseURL string `json:"upstream_base_url,omitempty"`
@@ -186,8 +189,13 @@ func InitTask(platform constant.TaskPlatform, relayInfo *commonRelay.RelayInfo) 
 	if relayInfo != nil && relayInfo.ChannelMeta != nil {
 		if relayInfo.ChannelMeta.ChannelType == constant.ChannelTypeGemini ||
 			relayInfo.ChannelMeta.ChannelType == constant.ChannelTypeVertexAi ||
-			relayInfo.ChannelMeta.ChannelType == constant.ChannelTypeRunningHub {
+			relayInfo.ChannelMeta.ChannelType == constant.ChannelTypeRunningHub ||
+			relayInfo.ChannelMeta.ChannelType == constant.ChannelTypeComfyUIH3 {
 			privateData.Key = relayInfo.ChannelMeta.ApiKey
+		}
+		if relayInfo.ChannelMeta.ChannelType == constant.ChannelTypeComfyUIH3 &&
+			relayInfo.ChannelMeta.ChannelOtherSettings.ComfyUIH3GatewayURL != "" {
+			privateData.ComfyUIH3Gateway = true
 		}
 		if relayInfo.UpstreamModelName != "" {
 			properties.UpstreamModelName = relayInfo.UpstreamModelName
