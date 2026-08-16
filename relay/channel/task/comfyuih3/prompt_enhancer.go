@@ -206,7 +206,7 @@ func requestEnhancedH3Prompt(
 		}
 		remaining := time.Until(deadline)
 		attemptsLeft := promptEnhancerMaxAttempts - attempt
-		attemptTimeout := remaining / time.Duration(attemptsLeft)
+		attemptTimeout := promptEnhancerAttemptTimeout(remaining, attemptsLeft, attempt)
 		if attemptTimeout <= 0 {
 			if lastErr != nil {
 				return "", lastErr
@@ -226,6 +226,20 @@ func requestEnhancedH3Prompt(
 		}
 	}
 	return "", lastErr
+}
+
+// Give the first upstream attempt most of the available budget because a
+// successful H3 prompt rewrite commonly takes several seconds. Shorter retry
+// windows are still retained for transient provider errors after the first
+// attempt, without increasing the configured total timeout.
+func promptEnhancerAttemptTimeout(remaining time.Duration, attemptsLeft, attempt int) time.Duration {
+	if attemptsLeft <= 1 {
+		return remaining
+	}
+	if attempt == 0 {
+		return remaining * 2 / 3
+	}
+	return remaining / time.Duration(attemptsLeft)
 }
 
 func requestEnhancedH3PromptOnce(

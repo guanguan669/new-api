@@ -472,6 +472,12 @@ func TestRequestEnhancedH3PromptRetriesWithinTotalTimeoutBudget(t *testing.T) {
 	require.Less(t, time.Since(started), 500*time.Millisecond)
 }
 
+func TestPromptEnhancerAttemptTimeoutGivesFirstAttemptMoreTime(t *testing.T) {
+	require.Equal(t, 20*time.Second, promptEnhancerAttemptTimeout(30*time.Second, 3, 0))
+	require.Equal(t, 5*time.Second, promptEnhancerAttemptTimeout(10*time.Second, 2, 1))
+	require.Equal(t, 7*time.Second, promptEnhancerAttemptTimeout(7*time.Second, 1, 2))
+}
+
 func TestPromptEnhancerRequestTimeoutCapsOptionalEnhancementWait(t *testing.T) {
 	setPromptEnhancerMaxWait(t, promptEnhancerMaxTimeout)
 	require.Equal(t, promptEnhancerDefaultTimeout, promptEnhancerRequestTimeout(model_setting.ComfyUIH3PromptEnhancerSettings{}))
