@@ -132,7 +132,7 @@ const buildFormDefaults = (
   api_key: '',
   clear_api_key: false,
   model: defaults['comfyui_h3_prompt_enhancer.model'] ?? '',
-  timeout_seconds: defaults['comfyui_h3_prompt_enhancer.timeout_seconds'] ?? 8,
+  timeout_seconds: defaults['comfyui_h3_prompt_enhancer.timeout_seconds'] ?? 30,
   system_prompt: defaults['comfyui_h3_prompt_enhancer.system_prompt'] ?? '',
 })
 

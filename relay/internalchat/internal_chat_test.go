@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -159,6 +160,50 @@ func TestExecuteUsesExactChannelMappingAndReturnsOpenAIResponse(t *testing.T) {
 	assert.Equal(t, "mapped-model", upstreamModel)
 	require.Len(t, response.Choices, 1)
 	assert.Equal(t, "enhanced prompt", response.Choices[0].Message.StringContent())
+}
+
+func TestExecutePreservingSystemRoleKeepsGPT5SystemMessage(t *testing.T) {
+	service.InitTokenEncoders()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/chat/completions", r.URL.Path)
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		var request dto.GeneralOpenAIRequest
+		require.NoError(t, json.Unmarshal(body, &request))
+		require.Len(t, request.Messages, 2)
+		assert.Equal(t, "system", request.Messages[0].Role)
+		assert.Equal(t, "user", request.Messages[1].Role)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"preserved"}}]}`)
+	}))
+	defer server.Close()
+
+	baseURL := server.URL
+	originalGetter := getChannelByID
+	getChannelByID = func(id int, selectAll bool) (*model.Channel, error) {
+		require.Equal(t, 61, id)
+		require.True(t, selectAll)
+		channel := testChannel(id, constant.ChannelTypeOpenAI, common.ChannelStatusEnabled, "gpt-5.6-terra")
+		channel.Key = "upstream-secret"
+		channel.BaseURL = &baseURL
+		return channel, nil
+	}
+	t.Cleanup(func() { getChannelByID = originalGetter })
+
+	originalShouldUseResponses := shouldUseResponsesForInternalChat
+	shouldUseResponsesForInternalChat = func(int, int, string) bool { return false }
+	t.Cleanup(func() { shouldUseResponsesForInternalChat = originalShouldUseResponses })
+
+	response, err := ExecutePreservingSystemRole(context.Background(), 61, &dto.GeneralOpenAIRequest{
+		Model: "gpt-5.6-terra",
+		Messages: []dto.Message{
+			{Role: "system", Content: "system instructions"},
+			{Role: "user", Content: "user request"},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, response.Choices, 1)
+	assert.Equal(t, "preserved", response.Choices[0].Message.StringContent())
 }
 
 func TestExecuteHonorsContextDeadline(t *testing.T) {

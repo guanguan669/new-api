@@ -78,6 +78,39 @@ func TestRequestEnhancedH3PromptSendsContextAndImages(t *testing.T) {
 	require.Contains(t, enhanced, "integrated_multimodal_description: enhanced")
 }
 
+func TestRequestEnhancedH3PromptUsesStringContentWithoutImages(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, common.Unmarshal(body, &raw))
+		messages, ok := raw["messages"].([]any)
+		require.True(t, ok)
+		require.Len(t, messages, 2)
+		userMessage, ok := messages[1].(map[string]any)
+		require.True(t, ok)
+		_, isString := userMessage["content"].(string)
+		require.True(t, isString, "text-only prompt enhancement must use string message content")
+		require.Contains(t, userMessage["content"], "Target video duration: 5 seconds")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"enhanced text-only prompt"}}]}`)
+	}))
+	defer server.Close()
+
+	result, err := requestEnhancedH3Prompt(
+		context.Background(),
+		relaycommon.TaskSubmitReq{Prompt: "a dancer performs on stage", Seconds: "5"},
+		h3Selector{AspectRatio: defaultAspect, Megapixels: 1, Multiple: 32},
+		nil,
+		model_setting.ComfyUIH3PromptEnhancerSettings{
+			BaseURL: server.URL, Model: "vision-model", SystemPrompt: "system", TimeoutSeconds: 1,
+		},
+		server.Client(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, "enhanced text-only prompt", result)
+}
+
 func TestRequestEnhancedH3PromptLabelsFirstAndLastFrameRoles(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -334,11 +367,117 @@ func TestRequestEnhancedH3PromptHonorsTimeout(t *testing.T) {
 	require.Less(t, time.Since(started), 3*time.Second)
 }
 
+func TestRequestEnhancedH3PromptRetriesTransientHTTPFailures(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts < 3 {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = io.WriteString(w, `{"error":{"message":"upstream unavailable"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"enhanced after retry"}}]}`)
+	}))
+	defer server.Close()
+
+	result, err := requestEnhancedH3Prompt(
+		context.Background(),
+		relaycommon.TaskSubmitReq{Prompt: "test", Seconds: "5"},
+		h3Selector{AspectRatio: defaultAspect, Megapixels: 1, Multiple: 32},
+		nil,
+		model_setting.ComfyUIH3PromptEnhancerSettings{BaseURL: server.URL, Model: "vision", SystemPrompt: "system", TimeoutSeconds: 1},
+		server.Client(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, "enhanced after retry", result)
+	require.Equal(t, 3, attempts)
+}
+
+func TestRequestEnhancedH3PromptDoesNotRetryPermanentHTTPFailures(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error":{"message":"invalid api key"}}`)
+	}))
+	defer server.Close()
+
+	_, err := requestEnhancedH3Prompt(
+		context.Background(),
+		relaycommon.TaskSubmitReq{Prompt: "test", Seconds: "5"},
+		h3Selector{AspectRatio: defaultAspect, Megapixels: 1, Multiple: 32},
+		nil,
+		model_setting.ComfyUIH3PromptEnhancerSettings{BaseURL: server.URL, Model: "vision", SystemPrompt: "system", TimeoutSeconds: 1},
+		server.Client(),
+	)
+	require.Error(t, err)
+	require.Equal(t, 1, attempts)
+}
+
+func TestRequestEnhancedH3PromptRetriesTransientChannelFailures(t *testing.T) {
+	originalExecute := executeInternalH3PromptChat
+	attempts := 0
+	executeInternalH3PromptChat = func(ctx context.Context, channelID int, request *openaidto.GeneralOpenAIRequest) (*openaidto.OpenAITextResponse, error) {
+		attempts++
+		require.Equal(t, 27, channelID)
+		if attempts < 3 {
+			return nil, fmt.Errorf("unknown provider")
+		}
+		return &openaidto.OpenAITextResponse{Choices: []openaidto.OpenAITextResponseChoice{{
+			Message: openaidto.Message{Role: "assistant", Content: "channel enhanced after retry"},
+		}}}, nil
+	}
+	t.Cleanup(func() { executeInternalH3PromptChat = originalExecute })
+
+	result, err := requestEnhancedH3Prompt(
+		context.Background(),
+		relaycommon.TaskSubmitReq{Prompt: "test", Seconds: "5"},
+		h3Selector{AspectRatio: defaultAspect, Megapixels: 1, Multiple: 32},
+		nil,
+		model_setting.ComfyUIH3PromptEnhancerSettings{
+			ProviderMode:   model_setting.ComfyUIH3PromptEnhancerProviderChannel,
+			ChannelID:      27,
+			Model:          "vision",
+			SystemPrompt:   "system",
+			TimeoutSeconds: 1,
+		},
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "channel enhanced after retry", result)
+	require.Equal(t, 3, attempts)
+}
+
+func TestRequestEnhancedH3PromptRetriesWithinTotalTimeoutBudget(t *testing.T) {
+	setPromptEnhancerMaxWait(t, 90*time.Millisecond)
+	attempts := 0
+	client := &http.Client{Transport: promptEnhancerRoundTripper(func(request *http.Request) (*http.Response, error) {
+		attempts++
+		<-request.Context().Done()
+		return nil, request.Context().Err()
+	})}
+
+	started := time.Now()
+	_, err := requestEnhancedH3Prompt(
+		context.Background(),
+		relaycommon.TaskSubmitReq{Prompt: "test", Seconds: "5"},
+		h3Selector{AspectRatio: defaultAspect, Megapixels: 1, Multiple: 32},
+		nil,
+		model_setting.ComfyUIH3PromptEnhancerSettings{BaseURL: "https://enhancer.example", Model: "vision", SystemPrompt: "system", TimeoutSeconds: 1},
+		client,
+	)
+	require.Error(t, err)
+	require.Equal(t, 3, attempts)
+	require.Less(t, time.Since(started), 500*time.Millisecond)
+}
+
 func TestPromptEnhancerRequestTimeoutCapsOptionalEnhancementWait(t *testing.T) {
-	setPromptEnhancerMaxWait(t, promptEnhancerDefaultMaxWait)
-	require.Equal(t, promptEnhancerDefaultMaxWait, promptEnhancerRequestTimeout(model_setting.ComfyUIH3PromptEnhancerSettings{}))
+	setPromptEnhancerMaxWait(t, promptEnhancerMaxTimeout)
+	require.Equal(t, promptEnhancerDefaultTimeout, promptEnhancerRequestTimeout(model_setting.ComfyUIH3PromptEnhancerSettings{}))
 	require.Equal(t, 3*time.Second, promptEnhancerRequestTimeout(model_setting.ComfyUIH3PromptEnhancerSettings{TimeoutSeconds: 3}))
-	require.Equal(t, promptEnhancerDefaultMaxWait, promptEnhancerRequestTimeout(model_setting.ComfyUIH3PromptEnhancerSettings{TimeoutSeconds: 20}))
+	require.Equal(t, 20*time.Second, promptEnhancerRequestTimeout(model_setting.ComfyUIH3PromptEnhancerSettings{TimeoutSeconds: 20}))
+	require.Equal(t, promptEnhancerMaxTimeout, promptEnhancerRequestTimeout(model_setting.ComfyUIH3PromptEnhancerSettings{TimeoutSeconds: 301}))
 }
 
 func TestApplyPromptEnhancementUsesSingleDeadline(t *testing.T) {

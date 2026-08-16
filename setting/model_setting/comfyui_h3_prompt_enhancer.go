@@ -49,7 +49,7 @@ type ComfyUIH3PromptEnhancerSettings struct {
 var comfyUIH3PromptEnhancerSettings = ComfyUIH3PromptEnhancerSettings{
 	Enabled:        true,
 	ProviderMode:   ComfyUIH3PromptEnhancerProviderDirect,
-	TimeoutSeconds: 8,
+	TimeoutSeconds: 30,
 	SystemPrompt:   DefaultComfyUIH3ContextIRSystemPrompt,
 }
 

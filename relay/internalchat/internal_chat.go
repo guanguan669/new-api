@@ -115,6 +115,18 @@ func ValidateChannel(channel *model.Channel, modelName string) error {
 // channel. It bypasses channel distribution, public-token authorization,
 // billing, consume logs, and task persistence.
 func Execute(ctx context.Context, channelID int, request *dto.GeneralOpenAIRequest) (*dto.OpenAITextResponse, error) {
+	return execute(ctx, channelID, request, false)
+}
+
+// ExecutePreservingSystemRole is used by internal prompt builders whose
+// system instructions must remain a system message at the selected upstream.
+// Some GPT-5-compatible gateways reject the OpenAI adaptor's usual
+// system-to-developer conversion even though ordinary user-only requests work.
+func ExecutePreservingSystemRole(ctx context.Context, channelID int, request *dto.GeneralOpenAIRequest) (*dto.OpenAITextResponse, error) {
+	return execute(ctx, channelID, request, true)
+}
+
+func execute(ctx context.Context, channelID int, request *dto.GeneralOpenAIRequest, preserveSystemRole bool) (*dto.OpenAITextResponse, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -179,9 +191,13 @@ func Execute(ctx context.Context, channelID int, request *dto.GeneralOpenAIReque
 		return executeViaResponses(c, info, adaptor, reqCopy, recorder)
 	}
 
+	systemMessageIndices := systemMessageIndexes(reqCopy)
 	converted, err := adaptor.ConvertOpenAIRequest(c, info, reqCopy)
 	if err != nil {
 		return nil, fmt.Errorf("convert LLM request: %w", err)
+	}
+	if preserveSystemRole {
+		restoreSystemMessageRoles(reqCopy, systemMessageIndices)
 	}
 	relaycommon.AppendRequestConversionFromRequest(info, converted)
 	jsonData, err := common.Marshal(converted)
@@ -220,6 +236,30 @@ func Execute(ctx context.Context, channelID int, request *dto.GeneralOpenAIReque
 		return nil, relayErr
 	}
 	return internalChatResult(recorder)
+}
+
+func systemMessageIndexes(request *dto.GeneralOpenAIRequest) []int {
+	if request == nil {
+		return nil
+	}
+	indices := make([]int, 0, 1)
+	for index := range request.Messages {
+		if request.Messages[index].Role == "system" {
+			indices = append(indices, index)
+		}
+	}
+	return indices
+}
+
+func restoreSystemMessageRoles(request *dto.GeneralOpenAIRequest, indices []int) {
+	if request == nil {
+		return
+	}
+	for _, index := range indices {
+		if index >= 0 && index < len(request.Messages) && request.Messages[index].Role == "developer" {
+			request.Messages[index].Role = "system"
+		}
+	}
 }
 
 func shouldUseResponses(c *gin.Context, info *relaycommon.RelayInfo) bool {

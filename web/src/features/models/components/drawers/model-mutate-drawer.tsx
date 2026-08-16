@@ -331,7 +331,7 @@ export function ModelMutateDrawer({
       'comfyui_h3_prompt_enhancer.base_url': '',
       'comfyui_h3_prompt_enhancer.api_key': '',
       'comfyui_h3_prompt_enhancer.model': '',
-      'comfyui_h3_prompt_enhancer.timeout_seconds': 8,
+      'comfyui_h3_prompt_enhancer.timeout_seconds': 30,
       'comfyui_h3_prompt_enhancer.system_prompt': '',
       RetryTimes: 0,
       ChannelDisableThreshold: '',

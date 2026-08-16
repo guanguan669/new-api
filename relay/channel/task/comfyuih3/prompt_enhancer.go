@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -18,6 +20,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/internalchat"
 	openaidto "github.com/QuantumNous/new-api/relaykit/dto"
+	relaytypes "github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/gin-gonic/gin"
@@ -29,15 +32,37 @@ const (
 	maxPromptEnhancerImageBytes = 10 * 1024 * 1024
 	maxPromptEnhancerTotalBytes = 32 * 1024 * 1024
 	h3PromptEnhancerFPS         = 24
-	// Prompt enhancement is optional. Keep its synchronous wait below common
-	// downstream request deadlines so an unavailable LLM cannot block video
-	// task creation.
-	promptEnhancerDefaultMaxWait = 8 * time.Second
+	// Prompt enhancement is optional, but multimodal requests can legitimately
+	// take longer than a normal text completion. The administrator-configured
+	// timeout is honored up to the same 300-second limit exposed by the settings
+	// API; the request context still cancels it when the downstream request ends.
+	promptEnhancerDefaultTimeout = 30 * time.Second
+	promptEnhancerMaxTimeout     = 300 * time.Second
+	promptEnhancerMaxAttempts    = 3
 )
 
+type promptEnhancerHTTPError struct {
+	statusCode int
+	status     string
+	message    string
+}
+
+func (e *promptEnhancerHTTPError) Error() string {
+	if e == nil {
+		return "prompt enhancer HTTP request failed"
+	}
+	if e.message == "" {
+		return fmt.Sprintf("prompt enhancer returned %s", e.status)
+	}
+	return fmt.Sprintf("prompt enhancer returned %s: %s", e.status, e.message)
+}
+
 var enhanceH3Prompt = requestEnhancedH3Prompt
-var executeInternalH3PromptChat = internalchat.Execute
-var promptEnhancerMaxWait = promptEnhancerDefaultMaxWait
+var executeInternalH3PromptChat = internalchat.ExecutePreservingSystemRole
+
+// Kept as a variable so tests can exercise cancellation without sleeping for
+// the production timeout. It is a safety ceiling, not a fixed 8-second wait.
+var promptEnhancerMaxWait = promptEnhancerMaxTimeout
 
 func (a *TaskAdaptor) applyPromptEnhancement(c *gin.Context, req relaycommon.TaskSubmitReq, selector h3Selector) relaycommon.TaskSubmitReq {
 	if c != nil {
@@ -143,30 +168,90 @@ func requestEnhancedH3Prompt(
 		},
 		Stream: &stream,
 	}
-	payload.Messages[1].SetMediaContent(content)
-	if model_setting.NormalizeComfyUIH3PromptEnhancerProviderMode(settings.ProviderMode) == model_setting.ComfyUIH3PromptEnhancerProviderChannel {
-		result, err := executeInternalH3PromptChat(requestCtx, settings.ChannelID, &payload)
+	// Keep pure text enhancement requests in the canonical OpenAI shape. Some
+	// OpenAI-compatible gateways only accept a string for text-only messages;
+	// multimodal requests still use the content-part array required for images.
+	if len(images) == 0 {
+		payload.Messages[1].SetStringContent(contextText)
+	} else {
+		payload.Messages[1].SetMediaContent(content)
+	}
+
+	providerMode := model_setting.NormalizeComfyUIH3PromptEnhancerProviderMode(settings.ProviderMode)
+	var body []byte
+	var endpoint string
+	var err error
+	if providerMode != model_setting.ComfyUIH3PromptEnhancerProviderChannel {
+		body, err = common.Marshal(payload)
+		if err != nil {
+			return "", fmt.Errorf("marshal prompt enhancer request: %w", err)
+		}
+		endpoint, err = promptEnhancerEndpoint(settings.BaseURL)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < promptEnhancerMaxAttempts; attempt++ {
+		if err := requestCtx.Err(); err != nil {
+			if lastErr != nil {
+				return "", lastErr
+			}
+			return "", err
+		}
+		deadline, hasDeadline := requestCtx.Deadline()
+		if !hasDeadline {
+			return "", errors.New("prompt enhancer request has no deadline")
+		}
+		remaining := time.Until(deadline)
+		attemptsLeft := promptEnhancerMaxAttempts - attempt
+		attemptTimeout := remaining / time.Duration(attemptsLeft)
+		if attemptTimeout <= 0 {
+			if lastErr != nil {
+				return "", lastErr
+			}
+			return "", context.DeadlineExceeded
+		}
+
+		attemptCtx, cancelAttempt := context.WithTimeout(requestCtx, attemptTimeout)
+		enhanced, err := requestEnhancedH3PromptOnce(attemptCtx, payload, settings, client, body, endpoint, providerMode)
+		cancelAttempt()
+		if err == nil {
+			return enhanced, nil
+		}
+		lastErr = err
+		if attempt == promptEnhancerMaxAttempts-1 || !shouldRetryPromptEnhancerError(err, requestCtx) {
+			return "", err
+		}
+	}
+	return "", lastErr
+}
+
+func requestEnhancedH3PromptOnce(
+	ctx context.Context,
+	payload openaidto.GeneralOpenAIRequest,
+	settings model_setting.ComfyUIH3PromptEnhancerSettings,
+	client *http.Client,
+	body []byte,
+	endpoint string,
+	providerMode string,
+) (string, error) {
+	if providerMode == model_setting.ComfyUIH3PromptEnhancerProviderChannel {
+		result, err := executeInternalH3PromptChat(ctx, settings.ChannelID, &payload)
 		if err != nil {
 			return "", fmt.Errorf("request prompt enhancer channel %d: %w", settings.ChannelID, err)
 		}
 		if result == nil || len(result.Choices) == 0 {
-			return "", fmt.Errorf("prompt enhancer response has no choices")
+			return "", errors.New("prompt enhancer response has no choices")
 		}
 		enhanced := cleanEnhancedPrompt(result.Choices[0].Message.StringContent())
 		if enhanced == "" {
-			return "", fmt.Errorf("prompt enhancer returned an empty prompt")
+			return "", errors.New("prompt enhancer returned an empty prompt")
 		}
 		return enhanced, nil
 	}
-	body, err := common.Marshal(payload)
-	if err != nil {
-		return "", fmt.Errorf("marshal prompt enhancer request: %w", err)
-	}
-	endpoint, err := promptEnhancerEndpoint(settings.BaseURL)
-	if err != nil {
-		return "", err
-	}
-	httpReq, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return "", fmt.Errorf("create prompt enhancer request: %w", err)
 	}
@@ -195,20 +280,97 @@ func requestEnhancedH3Prompt(
 		if len(message) > 300 {
 			message = message[:300]
 		}
-		return "", fmt.Errorf("prompt enhancer returned %s: %s", resp.Status, message)
+		return "", &promptEnhancerHTTPError{statusCode: resp.StatusCode, status: resp.Status, message: message}
 	}
 	var result openaidto.OpenAITextResponse
 	if err := common.Unmarshal(responseBody, &result); err != nil {
 		return "", fmt.Errorf("unmarshal prompt enhancer response: %w", err)
 	}
 	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("prompt enhancer response has no choices")
+		return "", errors.New("prompt enhancer response has no choices")
 	}
 	enhanced := cleanEnhancedPrompt(result.Choices[0].Message.StringContent())
 	if enhanced == "" {
-		return "", fmt.Errorf("prompt enhancer returned an empty prompt")
+		return "", errors.New("prompt enhancer returned an empty prompt")
 	}
 	return enhanced, nil
+}
+
+func shouldRetryPromptEnhancerError(err error, totalCtx context.Context) bool {
+	if err == nil || (totalCtx != nil && totalCtx.Err() != nil) || errors.Is(err, context.Canceled) {
+		return false
+	}
+	statusCode := promptEnhancerErrorStatusCode(err)
+	if statusCode >= http.StatusBadRequest && statusCode < http.StatusInternalServerError && statusCode != http.StatusTooManyRequests {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"invalid api key",
+		"api key is invalid",
+		"authentication failed",
+		"unauthorized",
+		"forbidden",
+		"model is required",
+		"model not configured",
+		"model not found",
+		"llm model is required",
+		"channel does not exist",
+		"channel is disabled",
+		"invalid prompt enhancer",
+		"invalid request",
+		"bad request",
+	} {
+		if strings.Contains(lower, marker) {
+			return false
+		}
+	}
+	if statusCode == http.StatusTooManyRequests || statusCode >= http.StatusInternalServerError {
+		return true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary()) {
+		return true
+	}
+	for _, marker := range []string{
+		"unknown provider",
+		"temporarily unavailable",
+		"service unavailable",
+		"upstream unavailable",
+		"try again",
+		"server busy",
+		"overloaded",
+		"connection reset",
+		"connection refused",
+		"broken pipe",
+		"eof",
+		"timeout",
+		"deadline exceeded",
+		"bad gateway",
+		"gateway timeout",
+		"upstream error",
+		"response has no choices",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func promptEnhancerErrorStatusCode(err error) int {
+	var httpErr *promptEnhancerHTTPError
+	if errors.As(err, &httpErr) && httpErr != nil {
+		return httpErr.statusCode
+	}
+	var apiErr *relaytypes.NewAPIError
+	if errors.As(err, &apiErr) && apiErr != nil {
+		return apiErr.StatusCode
+	}
+	return 0
 }
 
 func firstLastFramePromptContext(seconds int) string {
@@ -229,7 +391,10 @@ func firstLastFramePromptContext(seconds int) string {
 func promptEnhancerRequestTimeout(settings model_setting.ComfyUIH3PromptEnhancerSettings) time.Duration {
 	timeoutSeconds := settings.TimeoutSeconds
 	if timeoutSeconds <= 0 {
-		return promptEnhancerMaxWait
+		if promptEnhancerDefaultTimeout > promptEnhancerMaxWait {
+			return promptEnhancerMaxWait
+		}
+		return promptEnhancerDefaultTimeout
 	}
 	timeout := time.Duration(timeoutSeconds) * time.Second
 	if timeout > promptEnhancerMaxWait {
