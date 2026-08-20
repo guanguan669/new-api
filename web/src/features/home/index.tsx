@@ -20,21 +20,22 @@ import { useCallback, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { PublicLayout } from '@/components/layout'
-import { Footer } from '@/components/layout/components/footer'
 import { RichContent } from '@/components/rich-content'
 import { useTheme } from '@/context/theme-provider'
 import { isLikelyHtml } from '@/lib/content-format'
-import { useAuthStore } from '@/stores/auth-store'
-
-import { CTA, Features, Hero, HowItWorks, Stats } from './components'
+import {
+  BentoCapabilities,
+  FaqAndCta,
+  IntegrationShowcase,
+  ProofBand,
+  RedesignedHero,
+} from './components'
 import { useHomePageContent } from './hooks'
 
 export function Home() {
   const { i18n, t } = useTranslation()
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const { resolvedTheme } = useTheme()
-  const { auth } = useAuthStore()
-  const isAuthenticated = !!auth.user
   const { content, isLoaded, isUrl } = useHomePageContent()
 
   const syncIframePreferences = useCallback(() => {
@@ -60,11 +61,9 @@ export function Home() {
 
   if (!isLoaded) {
     return (
-      <PublicLayout showMainContainer={false}>
-        <main className='flex min-h-screen items-center justify-center'>
-          <div className='text-muted-foreground'>{t('Loading...')}</div>
-        </main>
-      </PublicLayout>
+      <main className='flex min-h-screen items-center justify-center bg-background'>
+        <div className='text-sm text-muted-foreground'>{t('Loading...')}</div>
+      </main>
     )
   }
 
@@ -122,12 +121,13 @@ export function Home() {
 
   return (
     <PublicLayout showMainContainer={false}>
-      <Hero isAuthenticated={isAuthenticated} />
-      <Stats />
-      <Features />
-      <HowItWorks />
-      <CTA isAuthenticated={isAuthenticated} />
-      <Footer />
+      <main className='bg-background text-foreground antialiased'>
+        <RedesignedHero />
+        <ProofBand />
+        <BentoCapabilities />
+        <IntegrationShowcase />
+        <FaqAndCta />
+      </main>
     </PublicLayout>
   )
 }

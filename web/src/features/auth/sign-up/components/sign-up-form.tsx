@@ -136,7 +136,14 @@ export function SignUpForm({
     if (aff) {
       saveAffiliateCode(aff)
     }
-  }, [])
+    // Prefill email carried over from the landing hero (?email=...).
+    const emailFromHero = new URLSearchParams(window.location.search)
+      .get('email')
+      ?.trim()
+    if (emailFromHero) {
+      form.setValue('email', emailFromHero, { shouldValidate: false })
+    }
+  }, [form])
 
   async function onSubmit(data: z.infer<typeof registerFormSchema>) {
     if (requiresLegalConsent && !agreedToLegal) {

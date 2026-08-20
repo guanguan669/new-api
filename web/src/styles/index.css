@@ -696,3 +696,125 @@ For commercial licensing, please contact support@quantumnous.com
     display: none;
   }
 }
+
+/* Marquee animation for trust logos */
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.animate-marquee {
+  animation: marquee 40s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-marquee {
+    animation: none;
+  }
+}
+
+/* ── Auth panel ambient animations ── */
+@keyframes auth-float {
+  0%,
+  100% {
+    transform: translateY(0) rotate(var(--float-rotate, 0deg));
+  }
+  50% {
+    transform: translateY(-14px) rotate(var(--float-rotate, 0deg));
+  }
+}
+
+@keyframes auth-drift {
+  0%,
+  100% {
+    transform: translate(0, 0) scale(1);
+  }
+  33% {
+    transform: translate(36px, -28px) scale(1.08);
+  }
+  66% {
+    transform: translate(-24px, 20px) scale(0.94);
+  }
+}
+
+@keyframes auth-beam {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(400%);
+  }
+}
+
+.auth-animate-float {
+  animation: auth-float 6s ease-in-out infinite;
+}
+
+.auth-animate-drift {
+  animation: auth-drift 18s ease-in-out infinite;
+}
+
+.auth-animate-beam {
+  animation: auth-beam 4.8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-animate-float,
+  .auth-animate-drift,
+  .auth-animate-beam {
+    animation: none;
+  }
+}
+
+/* Magic UI — Orbiting Circles (uses per-child --duration/--radius/--angle) */
+@keyframes orbit {
+  0% {
+    transform: rotate(calc(var(--angle) * 1deg))
+      translateY(calc(var(--radius) * 1px))
+      rotate(calc(var(--angle) * -1deg));
+  }
+  100% {
+    transform: rotate(calc(var(--angle) * 1deg + 360deg))
+      translateY(calc(var(--radius) * 1px))
+      rotate(calc((var(--angle) * -1deg) - 360deg));
+  }
+}
+
+.animate-orbit {
+  animation: orbit calc(var(--duration) * 1s) linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-orbit {
+    animation: none;
+  }
+}
+
+/* Aceternity — aurora background sweep. Defined via @utility so Tailwind
+ * variants like `after:animate-aurora` are generated correctly. */
+@keyframes aurora {
+  from {
+    background-position:
+      50% 50%,
+      50% 50%;
+  }
+  to {
+    background-position:
+      350% 50%,
+      350% 50%;
+  }
+}
+
+@utility animate-aurora {
+  animation: aurora 60s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-aurora {
+    animation: none;
+  }
+}

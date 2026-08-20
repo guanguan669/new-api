@@ -16,6 +16,20 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+export { AetherHero } from './aether-hero'
+export { RedesignedHero } from './redesigned-hero'
+export { ProofBand } from './proof-band'
+export { BentoCapabilities } from './bento-capabilities'
+export { IntegrationShowcase } from './integration-showcase'
+export { FaqAndCta } from './faq-and-cta'
+export { ScenarioGrid } from './scenario-grid'
+export { RoutingLab } from './routing-lab'
+export { ModelWall } from './model-wall'
+export { ProductPillars } from './product-pillars'
+export { MetricsBar } from './metrics-bar'
+export { TrustLogos } from './trust-logos'
+export { BottomCTA } from './bottom-cta'
+export { DetailedSections } from './detailed-sections'
 export { CTA } from './sections/cta'
 export { Features } from './sections/features'
 export { Hero } from './sections/hero'
